@@ -28,8 +28,61 @@
 
 /* Bloom Filter Functions written by Roozbeh Eskandari PhD Student's in Razi University, Kermanshah, Iran*/
 //#################Start#####################
-#define OVS_BLOOM_SHIFT 11 //2^11 = 2048bit
-#define OVS_BLOOM_MASK ((1U << OVS_BLOOM_SHIFT) - 1)
+#define OVS_BLOOM_SHIFT 11  /* 2048 bits */
+#define OVS_BLOOM_MASK  ((1U << OVS_BLOOM_SHIFT) - 1)
+
+static inline uint32_t
+ovs_bloom_hash(uint32_t basis, uint32_t value)
+{
+    uint32_t h = value ^ basis;
+    h ^= h >> 16;
+    h *= 0x85ebca6b;
+    h ^= h >> 13;
+    h *= 0xc2b2ae35;
+    h ^= h >> 16;
+    return h;
+}
+
+static void
+ovs_bloom_init(struct cls_subtable *subtable)
+{
+    memset(subtable->bloom_bits, 0, sizeof(subtable->bloom_bits));
+    subtable->bloom_enabled = true;
+}
+
+static void
+ovs_bloom_insert(struct cls_subtable *subtable, uint8_t index, uint32_t flow_hash)
+{
+    if (!subtable->bloom_enabled || index >= CLS_MAX_INDICES) {
+        return;
+    }
+    uint32_t idx1 = ovs_bloom_hash(0x12345678, flow_hash) & OVS_BLOOM_MASK;
+    subtable->bloom_bits[index][idx1 >> 5] |= (1U << (idx1 & 31));
+
+    uint32_t idx2 = ovs_bloom_hash(0x87654321, flow_hash) & OVS_BLOOM_MASK;
+    subtable->bloom_bits[index][idx2 >> 5] |= (1U << (idx2 & 31));
+}
+
+static inline bool
+ovs_bloom_lookup(const struct cls_subtable *subtable, uint8_t index, uint32_t flow_hash)
+{
+    if (!subtable->bloom_enabled || index >= CLS_MAX_INDICES) {
+        return true; 
+    }
+    
+    uint32_t idx1 = ovs_bloom_hash(0x12345678, flow_hash) & OVS_BLOOM_MASK;
+    if (!(subtable->bloom_bits[index][idx1 >> 5] & (1U << (idx1 & 31)))) {
+        return false;
+    }
+
+    uint32_t idx2 = ovs_bloom_hash(0x87654321, flow_hash) & OVS_BLOOM_MASK;
+    if (!(subtable->bloom_bits[index][idx2 >> 5] & (1U << (idx2 & 31)))) {
+        return false;
+    }
+
+    return true;
+}
+
 //##################END####################
 /* End Add by Roozbeh Eskandari*/
 struct trie_ctx;
@@ -580,7 +633,11 @@ classifier_replace(struct classifier *cls, const struct cls_rule *rule,
         /* Add new node to segment indices. */
         for (i = 0; i < n_indices; i++) {
             ccmap_inc(&subtable->indices[i], ihash[i]);
+                    /*Added by Roozbeh Eskandari*/
+            ovs_bloom_insert(subtable, i, hash[i]);//insert hash in BF for each Index
+                    /*end*/
         }
+
         n_rules = cmap_insert(&subtable->rules, &new->cmap_node, hash);
     } else {   /* Equal rules exist in the classifier already. */
         struct cls_match *prev, *iter;
@@ -1550,6 +1607,8 @@ insert_subtable(struct classifier *cls, const struct minimask *mask)
     size_t count = miniflow_n_values(&mask->masks);
 
     subtable = xzalloc(sizeof *subtable + MINIFLOW_VALUES_SIZE(count));
+    //add this line by Roozbeh Eskandari to initiated
+    ovs_bloom_init(subtable);
     cmap_init(&subtable->rules);
     miniflow_clone(CONST_CAST(struct miniflow *, &subtable->mask.masks),
                    &mask->masks, count);
@@ -1755,7 +1814,11 @@ find_match_wc(const struct cls_subtable *subtable, ovs_version_t version,
         hash = flow_hash_in_minimask_range(flow, &subtable->mask,
                                            subtable->index_maps[i],
                                            &mask_offset, &basis);
-
+            /*these condition add by Roozbeh Eskandari: check Bloom before ccmap*/
+            if(!ovs_bloom_lookup(subtable, i, hash)){
+                goto no_match;//Bloom Filter defently say: This key not exist in this subtable
+            }
+            /*end Bloom Condition*/
         if (!ccmap_find(&subtable->indices[i], hash)) {
             goto no_match;
         }
