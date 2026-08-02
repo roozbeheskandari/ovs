@@ -28,8 +28,12 @@
 /* A set of rules that all have the same fields wildcarded. */
 struct cls_subtable {
     struct cmap_node cmap_node;    /* Within classifier's 'subtables_map'. */
+    
+/* Bloom Filter fields ###### Roozbeh Eskandari 8/2/2026 */
+    uint32_t bloom_bits[64]; // Simple Bloom with 32*64 = 2048bit
+    bool bloom_enabled; //a flage for check Bloom was ready
 
-    /* These fields are only used by writers. */
+/* These fields are only used by writers. */
     int max_priority;              /* Max priority of any rule in subtable. */
     unsigned int max_count;        /* Count of max_priority rules. */
 
