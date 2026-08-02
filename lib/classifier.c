@@ -26,6 +26,12 @@
 #include "packets.h"
 #include "util.h"
 
+/* Bloom Filter Functions written by Roozbeh Eskandari PhD Student's in Razi University, Kermanshah, Iran*/
+//#################Start#####################
+#define OVS_BLOOM_SHIFT 11 //2^11 = 2048bit
+#define OVS_BLOOM_MASK ((1U << OVS_BLOOM_SHIFT) - 1)
+//##################END####################
+/* End Add by Roozbeh Eskandari*/
 struct trie_ctx;
 
 /* A collection of "struct cls_conjunction"s currently embedded into a
