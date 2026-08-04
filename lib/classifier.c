@@ -28,6 +28,74 @@
 
 /* Bloom Filter Functions written by Roozbeh Eskandari PhD Student's in Razi University, Kermanshah, Iran*/
 //#################Start#####################
+#include <inttypes.h>
+#include "openvswitch/vlog.h"
+
+VLOG_DEFINE_THIS_MODULE(classifier);
+
+struct ovs_bloom_stats {
+    uint64_t total_lookup_calls;
+    uint64_t wc_null_bypass;
+
+    uint64_t bloom_stage_lookups;
+    uint64_t bloom_negative;
+    uint64_t bloom_positive;
+
+    uint64_t ccmap_find_calls;
+    uint64_t ccmap_find_hits;
+    uint64_t bloom_false_positives;
+
+    uint64_t indexes_skipped;
+    uint64_t subtables_no_match;
+
+    uint64_t bloom_inserts;
+    uint64_t subtables_created;
+    uint64_t total_indices_configured;
+};
+
+static struct ovs_bloom_stats ovs_bloom_stats_global;
+
+static void
+ovs_bloom_stats_reset(void)
+{
+    memset(&ovs_bloom_stats_global, 0, sizeof ovs_bloom_stats_global);
+}
+
+static void
+ovs_bloom_stats_dump(void)
+{
+    const struct ovs_bloom_stats *s = &ovs_bloom_stats_global;
+
+    VLOG_INFO("bloom stats: total_lookup_calls=%"PRIu64
+              " wc_null_bypass=%"PRIu64
+              " bloom_stage_lookups=%"PRIu64
+              " bloom_negative=%"PRIu64
+              " bloom_positive=%"PRIu64
+              " ccmap_find_calls=%"PRIu64
+              " ccmap_find_hits=%"PRIu64
+              " bloom_false_positives=%"PRIu64
+              " indexes_skipped=%"PRIu64
+              " subtables_no_match=%"PRIu64
+              " bloom_inserts=%"PRIu64
+              " subtables_created=%"PRIu64
+              " total_indices_configured=%"PRIu64,
+              s->total_lookup_calls,
+              s->wc_null_bypass,
+              s->bloom_stage_lookups,
+              s->bloom_negative,
+              s->bloom_positive,
+              s->ccmap_find_calls,
+              s->ccmap_find_hits,
+              s->bloom_false_positives,
+              s->indexes_skipped,
+              s->subtables_no_match,
+              s->bloom_inserts,
+              s->subtables_created,
+              s->total_indices_configured);
+}
+
+
+
 #define OVS_BLOOM_SHIFT 11  /* 2048 bits */
 #define OVS_BLOOM_MASK  ((1U << OVS_BLOOM_SHIFT) - 1)
 
@@ -82,6 +150,8 @@ ovs_bloom_lookup(const struct cls_subtable *subtable, uint8_t index, uint32_t fl
 
     return true;
 }
+
+
 
 //##################END####################
 /* End Add by Roozbeh Eskandari*/
@@ -405,6 +475,9 @@ void
 classifier_destroy(struct classifier *cls)
 {
     if (cls) {
+        //Register Bloom Log in SYSTEM LOG per-destroy : written by Roozbeh Eskandari
+        ovs_bloom_stats_dump();
+        //end
         struct cls_subtable *subtable;
         uint32_t i, n_tries;
 
@@ -635,7 +708,8 @@ classifier_replace(struct classifier *cls, const struct cls_rule *rule,
             ccmap_inc(&subtable->indices[i], ihash[i]);
                     /*Added by Roozbeh Eskandari*/
             ovs_bloom_insert(subtable, i, ihash[i]);//insert hash in BF for each Index
-                    /*end*/
+            ovs_bloom_stats_global.bloom_inserts++;
+            /*end*/
         }
 
         n_rules = cmap_insert(&subtable->rules, &new->cmap_node, hash);
@@ -1609,6 +1683,8 @@ insert_subtable(struct classifier *cls, const struct minimask *mask)
     subtable = xzalloc(sizeof *subtable + MINIFLOW_VALUES_SIZE(count));
     //add this line by Roozbeh Eskandari to initiated
     ovs_bloom_init(subtable);
+    ovs_bloom_stats_global.subtables_created++;
+    //End
     cmap_init(&subtable->rules);
     miniflow_clone(CONST_CAST(struct miniflow *, &subtable->mask.masks),
                    &mask->masks, count);
@@ -1640,7 +1716,9 @@ insert_subtable(struct classifier *cls, const struct minimask *mask)
         }
     }
     *CONST_CAST(uint8_t *, &subtable->n_indices) = index;
-
+// Added by Roozbeh Eskandari
+    ovs_bloom_stats_global.total_indices_configured += index;
+//END
     atomic_read_relaxed(&cls->n_tries, &n_tries);
     for (i = 0; i < n_tries; i++) {
         subtable->trie_plen[i] = minimask_get_prefix_len(mask,
@@ -1786,7 +1864,13 @@ find_match_wc(const struct cls_subtable *subtable, ovs_version_t version,
               const struct flow *flow, struct trie_ctx *trie_ctx,
               uint32_t n_tries, struct flow_wildcards *wc)
 {
+    //################written by Roozbeh Eskandari
+        ovs_bloom_stats_global.total_lookup_calls++;
+    //#################END
     if (OVS_UNLIKELY(!wc)) {
+        //################written by Roozbeh Eskandari
+                ovs_bloom_stats_global.wc_null_bypass++;
+    //#################END
         return find_match(subtable, version, flow,
                           flow_hash_in_minimask(flow, &subtable->mask, 0));
     }
@@ -1814,14 +1898,30 @@ find_match_wc(const struct cls_subtable *subtable, ovs_version_t version,
         hash = flow_hash_in_minimask_range(flow, &subtable->mask,
                                            subtable->index_maps[i],
                                            &mask_offset, &basis);
-            /*these condition add by Roozbeh Eskandari: check Bloom before ccmap*/
+            /*these conditions add by Roozbeh Eskandari: check Bloom before ccmap*/
+            ovs_bloom_stats_global.bloom_stage_lookups++;
+
             if(!ovs_bloom_lookup(subtable, i, hash)){
+                ovs_bloom_stats_global.bloom_negative++;
+                ovs_bloom_stats_global.indexes_skipped++;
+                ovs_bloom_stats_global.subtables_no_match++;
                 goto no_match;//Bloom Filter defently say: This key not exist in this subtable
             }
+
+            ovs_bloom_stats_global.bloom_positive++;
+            ovs_bloom_stats_global.ccmap_find_calls++;
             /*end Bloom Condition*/
         if (!ccmap_find(&subtable->indices[i], hash)) {
+            //Added by Roozbeh Eskandari
+            ovs_bloom_stats_global.bloom_false_positives++;
+            ovs_bloom_stats_global.subtables_no_match++;
+            //END
             goto no_match;
         }
+
+        //Added By Roozbeh Eskandari
+        ovs_bloom_stats_global.ccmap_find_hits++;
+        //END
     }
     /* Trie check for the final range. */
     if (check_tries(trie_ctx, n_tries, subtable->trie_plen,
@@ -1856,6 +1956,12 @@ find_match_wc(const struct cls_subtable *subtable, ovs_version_t version,
 
     /* Must unwildcard all the fields, as they were looked at. */
     flow_wildcards_fold_minimask(wc, &subtable->mask);
+    //Print each 100000 entry to function Written by Roozbeh Eskandari - Store LOG
+    if (ovs_bloom_stats_global.total_lookup_calls % 100000 == 0) {
+        ovs_bloom_stats_dump();
+    }
+
+    //END
     return rule;
 
 no_match:
