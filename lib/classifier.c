@@ -634,7 +634,7 @@ classifier_replace(struct classifier *cls, const struct cls_rule *rule,
         for (i = 0; i < n_indices; i++) {
             ccmap_inc(&subtable->indices[i], ihash[i]);
                     /*Added by Roozbeh Eskandari*/
-            ovs_bloom_insert(subtable, i, hash[i]);//insert hash in BF for each Index
+            ovs_bloom_insert(subtable, i, ihash[i]);//insert hash in BF for each Index
                     /*end*/
         }
 
