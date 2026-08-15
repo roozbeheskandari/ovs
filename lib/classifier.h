@@ -304,6 +304,13 @@ struct classifier {
                                      * memory synchronization point for trie
                                      * configuration. */
     bool publish;                   /* Make changes visible to lookups? */
+    //Add By Roozbeh Eskandari
+    /* --- Global Cuckoo Filter --- */
+    struct cuckoo_bucket *global_cuckoo;
+    size_t cuckoo_num_buckets;
+    uint32_t cuckoo_seed;
+    /* ---------------------------- */
+    //END
 };
 
 struct cls_conjunction {

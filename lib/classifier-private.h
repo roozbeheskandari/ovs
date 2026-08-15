@@ -16,7 +16,19 @@
 
 #ifndef CLASSIFIER_PRIVATE_H
 #define CLASSIFIER_PRIVATE_H 1
+//Add By Roozbeh Eskandari
+#include <stdint.h>
+#include <stdbool.h>
+#define CUCKOO_NUM_BUCKETS 65536 // این مقدار را بسته به نیاز (مثلاً 1 میلیون) تغییر دهید
 
+#define CUCKOO_BUCKET_SIZE 4
+#define CUCKOO_MAX_KICKS 500
+
+
+struct cuckoo_bucket {
+    uint8_t fingerprints[CUCKOO_BUCKET_SIZE];
+};
+//END
 #include "ccmap.h"
 #include "cmap.h"
 #include "flow.h"

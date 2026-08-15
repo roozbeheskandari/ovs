@@ -26,6 +26,87 @@
 #include "packets.h"
 #include "util.h"
 
+
+//Add By Roozbeh Eskandari
+
+#include "random.h"
+#include "hash.h"
+#include "flow.h"
+// توابع کمکی برای هش و فینگرپرینت
+static inline uint32_t cuckoo_hash_item(uint32_t hash) {
+    return hash % CUCKOO_NUM_BUCKETS;
+}
+
+static inline uint16_t get_fingerprint(uint32_t hash) {
+    uint16_t fp = hash & 0xFFFF;
+    return fp == 0 ? 1 : fp; // فینگرپرینت صفر یعنی خانه خالی است
+}
+
+static inline uint32_t cuckoo_alt_index(uint32_t index, uint16_t fp) {
+    return (index ^ (fp * 0x5bd1e995)) % CUCKOO_NUM_BUCKETS;
+}
+
+// تابع جستجو (Lookup)
+static bool cuckoo_lookup(struct classifier *cls, uint32_t hash) {
+    if (!cls->global_cuckoo) return true; // اگر فیلتر مقداردهی نشده، به مسیر عادی برود
+
+    uint32_t idx1 = cuckoo_hash_item(hash);
+    uint16_t fp = get_fingerprint(hash);
+    uint32_t idx2 = cuckoo_alt_index(idx1, fp);
+
+    for (int i = 0; i < CUCKOO_BUCKET_SIZE; i++) {
+        if (cls->global_cuckoo[idx1].fingerprints[i] == fp || 
+            cls->global_cuckoo[idx2].fingerprints[i] == fp) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// تابع درج (Insert)
+static void cuckoo_insert(struct classifier *cls, uint32_t hash) {
+    if (!cls->global_cuckoo) return;
+
+    uint16_t fp = get_fingerprint(hash);
+    uint32_t idx1 = cuckoo_hash_item(hash);
+    uint32_t idx2 = cuckoo_alt_index(idx1, fp);
+
+    // بررسی سطل اول
+    for (int i = 0; i < CUCKOO_BUCKET_SIZE; i++) {
+        if (cls->global_cuckoo[idx1].fingerprints[i] == 0) {
+            cls->global_cuckoo[idx1].fingerprints[i] = fp;
+            return;
+        }
+    }
+    // بررسی سطل دوم
+    for (int i = 0; i < CUCKOO_BUCKET_SIZE; i++) {
+        if (cls->global_cuckoo[idx2].fingerprints[i] == 0) {
+            cls->global_cuckoo[idx2].fingerprints[i] = fp;
+            return;
+        }
+    }
+    
+    // منطق ساده Kicking (جایگزینی تصادفی در صورت پر بودن)
+    uint32_t curr_idx = idx1;
+    uint16_t curr_fp = fp;
+    for (int n = 0; n < MAX_CUCKOO_KICKS; n++) {
+        int slot = rand() % CUCKOO_BUCKET_SIZE;
+        uint16_t kicked_fp = cls->global_cuckoo[curr_idx].fingerprints[slot];
+        cls->global_cuckoo[curr_idx].fingerprints[slot] = curr_fp;
+        
+        curr_fp = kicked_fp;
+        curr_idx = cuckoo_alt_index(curr_idx, curr_fp);
+        
+        for (int i = 0; i < CUCKOO_BUCKET_SIZE; i++) {
+            if (cls->global_cuckoo[curr_idx].fingerprints[i] == 0) {
+                cls->global_cuckoo[curr_idx].fingerprints[i] = curr_fp;
+                return;
+            }
+        }
+    }
+}
+
+//END
 struct trie_ctx;
 
 /* A collection of "struct cls_conjunction"s currently embedded into a
@@ -337,6 +418,12 @@ classifier_init(struct classifier *cls, const uint8_t *flow_segments)
     memset(cls->tries, 0, sizeof cls->tries);
     atomic_store_explicit(&cls->n_tries, 0, memory_order_release);
     cls->publish = true;
+
+    //Add By Roozbeh Eskandari
+    cls->cuckoo_num_buckets = 1048576; // 2^20 باکِت، مناسب برای میلیون‌ها آبجکت
+    cls->global_cuckoo = xzalloc(cls->cuckoo_num_buckets * sizeof(struct cuckoo_bucket));
+    cls->cuckoo_seed = random_uint32();
+    //END
 }
 
 /* Destroys 'cls'.  Rules within 'cls', if any, are not freed; this is the
@@ -360,6 +447,9 @@ classifier_destroy(struct classifier *cls)
         cmap_destroy(&cls->subtables_map);
 
         pvector_destroy(&cls->subtables);
+        //Add by Roozbeh Eskandari
+        free(cls->global_cuckoo);
+        //END
     }
 }
 
@@ -691,6 +781,13 @@ classifier_insert(struct classifier *cls, const struct cls_rule *rule,
     const struct cls_rule *displaced_rule
         = classifier_replace(cls, rule, version, conj, n_conj);
     ovs_assert(!displaced_rule);
+
+    //Add by Roozbeh Eskandari
+    // در انتهای پروسه موفق درج rule، این تابع را صدا بزنید:
+    // فرض بر این است که hash فلو محاسبه شده و در متغیری مثل `flow_hash` در دسترس است
+    cuckoo_insert(cls, flow_hash);
+
+    //END
 }
 
 /* If 'rule' is in 'cls', removes 'rule' from 'cls' and returns true.  It is
@@ -971,6 +1068,16 @@ classifier_lookup__(const struct classifier *cls, ovs_version_t version,
                     bool allow_conjunctive_matches,
                     struct hmapx *conj_flows)
 {
+    //Add by Roozbeh Eskandari
+    // محاسبه هش برای فلو ورودی
+    uint32_t flow_hash = flow_hash_5tuple(flow, 0); // یا هر تابع هش استاندارد OVS برای فلو
+    
+    // بررسی در Cuckoo Filter
+    if (!cuckoo_lookup((struct classifier *)cls, flow_hash)) {
+        return NULL; // Rule وجود ندارد، جستجوی پرهزینه را Bypass کن
+    }
+
+    //END
     struct trie_ctx trie_ctx[CLS_MAX_TRIES];
     const struct cls_match *match;
     /* Highest-priority flow in 'cls' that certainly matches 'flow'. */
