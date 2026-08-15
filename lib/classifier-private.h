@@ -25,16 +25,18 @@
 #define CUCKOO_MAX_KICKS 500
 
 
-struct cuckoo_bucket {
-    uint8_t fingerprints[CUCKOO_BUCKET_SIZE];
-};
+
 //END
 #include "ccmap.h"
 #include "cmap.h"
 #include "flow.h"
 #include "hash.h"
 #include "rculist.h"
-
+//Add By Roozbeh Eskandari
+struct cuckoo_bucket {
+    uint8_t fingerprints[CUCKOO_BUCKET_SIZE];
+};
+//END
 /* Classifier internal definitions, subject to change at any time. */
 
 /* A set of rules that all have the same fields wildcarded. */
