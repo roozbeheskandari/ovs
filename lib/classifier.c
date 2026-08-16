@@ -89,7 +89,7 @@ static void cuckoo_insert(struct classifier *cls, uint32_t hash) {
     // منطق ساده Kicking (جایگزینی تصادفی در صورت پر بودن)
     uint32_t curr_idx = idx1;
     uint16_t curr_fp = fp;
-    for (int n = 0; n < MAX_CUCKOO_KICKS; n++) {
+    for (int n = 0; n < CUCKOO_MAX_KICKS; n++) {
         int slot = rand() % CUCKOO_BUCKET_SIZE;
         uint16_t kicked_fp = cls->global_cuckoo[curr_idx].fingerprints[slot];
         cls->global_cuckoo[curr_idx].fingerprints[slot] = curr_fp;
