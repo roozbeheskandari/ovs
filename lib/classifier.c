@@ -783,9 +783,9 @@ classifier_insert(struct classifier *cls, const struct cls_rule *rule,
     ovs_assert(!displaced_rule);
 
     //Add by Roozbeh Eskandari
-    // در انتهای پروسه موفق درج rule، این تابع را صدا بزنید:
-    // فرض بر این است که hash فلو محاسبه شده و در متغیری مثل `flow_hash` در دسترس است
-    cuckoo_insert(cls, flow_hash);
+
+    uint32_t f_hash = flow_hash_5tuple(&rule->match.flow, 0);
+    cuckoo_insert(cls, f_hash);
 
     //END
 }
