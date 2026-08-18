@@ -26,6 +26,82 @@
 #include "packets.h"
 #include "util.h"
 
+
+// Add by Roozbeh Eskandari
+static inline uint32_t cuckoo_hash_item(uint32_t hash, size_t num_buckets) {
+    return hash % num_buckets;
+}
+
+static inline uint16_t get_fingerprint(uint32_t hash) {
+    uint16_t fp = hash & 0xFFFF;
+    fp += (fp == 0); // Fingerprint cannot be 0
+    return fp;
+}
+
+static inline uint32_t cuckoo_alt_index(uint32_t index, uint16_t fp, size_t num_buckets) {
+    uint32_t alt_hash = fp * 0x5bd1e995; 
+    return (index ^ alt_hash) % num_buckets;
+}
+
+static bool cuckoo_lookup_subtable(struct cls_subtable *subtable, uint32_t hash) {
+    if (!subtable->cuckoo_filter || subtable->cuckoo_num_buckets == 0) return false;
+
+    uint32_t index1 = cuckoo_hash_item(hash, subtable->cuckoo_num_buckets);
+    uint16_t fp = get_fingerprint(hash);
+    uint32_t index2 = cuckoo_alt_index(index1, fp, subtable->cuckoo_num_buckets);
+
+    for (int i = 0; i < CUCKOO_BUCKET_SIZE; i++) {
+        if (subtable->cuckoo_filter[index1].fingerprints[i] == fp || 
+            subtable->cuckoo_filter[index2].fingerprints[i] == fp) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void cuckoo_insert_subtable(struct cls_subtable *subtable, uint32_t hash) {
+    if (!subtable->cuckoo_filter || subtable->cuckoo_num_buckets == 0) return;
+
+    uint32_t index1 = cuckoo_hash_item(hash, subtable->cuckoo_num_buckets);
+    uint16_t fp = get_fingerprint(hash);
+    uint32_t index2 = cuckoo_alt_index(index1, fp, subtable->cuckoo_num_buckets);
+
+    // Try first bucket
+    for (int i = 0; i < CUCKOO_BUCKET_SIZE; i++) {
+        if (subtable->cuckoo_filter[index1].fingerprints[i] == 0) {
+            subtable->cuckoo_filter[index1].fingerprints[i] = fp;
+            return;
+        }
+    }
+    // Try second bucket
+    for (int i = 0; i < CUCKOO_BUCKET_SIZE; i++) {
+        if (subtable->cuckoo_filter[index2].fingerprints[i] == 0) {
+            subtable->cuckoo_filter[index2].fingerprints[i] = fp;
+            return;
+        }
+    }
+
+    // Kickout logic (simplified for clarity, ensuring we respect CUCKOO_MAX_KICKS)
+    uint32_t curr_index = index1; // start kicking from index1
+    uint16_t curr_fp = fp;
+    for (int count = 0; count < CUCKOO_MAX_KICKS; count++) {
+        int slot = random_uint32() % CUCKOO_BUCKET_SIZE;
+        uint16_t displaced_fp = subtable->cuckoo_filter[curr_index].fingerprints[slot];
+        subtable->cuckoo_filter[curr_index].fingerprints[slot] = curr_fp;
+        
+        curr_fp = displaced_fp;
+        curr_index = cuckoo_alt_index(curr_index, curr_fp, subtable->cuckoo_num_buckets);
+        
+        for (int i = 0; i < CUCKOO_BUCKET_SIZE; i++) {
+            if (subtable->cuckoo_filter[curr_index].fingerprints[i] == 0) {
+                subtable->cuckoo_filter[curr_index].fingerprints[i] = curr_fp;
+                return;
+            }
+        }
+    }
+}
+// end
+
 struct trie_ctx;
 
 /* A collection of "struct cls_conjunction"s currently embedded into a
@@ -162,6 +238,46 @@ static bool mask_prefix_bits_set(const struct flow_wildcards *,
                                  uint8_t be32ofs, unsigned int n_bits);
 
 /* cls_rule. */
+// Add by Roozbeh Eskandari - Cuckoo Deletion
+static void cuckoo_delete_global(struct classifier *cls, uint32_t hash) {
+    if (!cls->global_cuckoo) return;
+
+    uint32_t index1 = cuckoo_hash_item(hash, CUCKOO_NUM_BUCKETS);
+    uint16_t fp = get_fingerprint(hash);
+    uint32_t index2 = cuckoo_alt_index(index1, fp, CUCKOO_NUM_BUCKETS);
+
+    for (int i = 0; i < CUCKOO_BUCKET_SIZE; i++) {
+        if (cls->global_cuckoo[index1].fingerprints[i] == fp) {
+            cls->global_cuckoo[index1].fingerprints[i] = 0; // Clear footprint
+            return;
+        }
+        if (cls->global_cuckoo[index2].fingerprints[i] == fp) {
+            cls->global_cuckoo[index2].fingerprints[i] = 0; // Clear footprint
+            return;
+        }
+    }
+}
+
+static void cuckoo_delete_subtable(struct cls_subtable *subtable, uint32_t hash) {
+    if (!subtable->cuckoo_filter || subtable->cuckoo_num_buckets == 0) return;
+
+    uint32_t index1 = cuckoo_hash_item(hash, subtable->cuckoo_num_buckets);
+    uint16_t fp = get_fingerprint(hash);
+    uint32_t index2 = cuckoo_alt_index(index1, fp, subtable->cuckoo_num_buckets);
+
+    for (int i = 0; i < CUCKOO_BUCKET_SIZE; i++) {
+        if (subtable->cuckoo_filter[index1].fingerprints[i] == fp) {
+            subtable->cuckoo_filter[index1].fingerprints[i] = 0;
+            return;
+        }
+        if (subtable->cuckoo_filter[index2].fingerprints[i] == fp) {
+            subtable->cuckoo_filter[index2].fingerprints[i] = 0;
+            return;
+        }
+    }
+}
+// end
+
 
 static inline void
 cls_rule_init__(struct cls_rule *rule, unsigned int priority)
@@ -337,6 +453,11 @@ classifier_init(struct classifier *cls, const uint8_t *flow_segments)
     memset(cls->tries, 0, sizeof cls->tries);
     atomic_store_explicit(&cls->n_tries, 0, memory_order_release);
     cls->publish = true;
+        // Add by Roozbeh Eskandari
+    cls->cuckoo_num_buckets = 8192; // مقدار اولیه برای گلوبال (بسته به نیاز قابل تغییر است)
+    cls->global_cuckoo = xzalloc(cls->cuckoo_num_buckets * sizeof *cls->global_cuckoo);
+    cls->cuckoo_seed = random_uint32();
+    // end
 }
 
 /* Destroys 'cls'.  Rules within 'cls', if any, are not freed; this is the
@@ -360,6 +481,12 @@ classifier_destroy(struct classifier *cls)
         cmap_destroy(&cls->subtables_map);
 
         pvector_destroy(&cls->subtables);
+                // Add by Roozbeh Eskandari
+        if (cls->global_cuckoo) {
+            free(cls->global_cuckoo);
+            cls->global_cuckoo = NULL;
+        }
+        // end
     }
 }
 
@@ -787,6 +914,16 @@ classifier_remove(struct classifier *cls, const struct cls_rule *cls_rule)
         ccmap_dec(&subtable->indices[i], ihash[i]);
     }
     n_rules = cmap_remove(&subtable->rules, &rule->cmap_node, hash);
+        // بعد از انجام موفق عملیات حذف در OVS (cmap_remove)
+    // Add by Roozbeh Eskandari - Tier 1 & Tier 2 Deletion
+    uint32_t subtable_hash = minimatch_hash(&rule->match, 0); // هش مربوط به subtable
+    cuckoo_delete_subtable(subtable, subtable_hash);
+
+    // برای گلوبال فیلتر (بسته به اینکه هش گلوبال را چطور تعریف کردید، معمولاً 5-tuple است)
+    uint32_t global_hash = minimatch_hash(&rule->match, cls->cuckoo_seed);
+    cuckoo_delete_global(cls, global_hash);
+    // end
+
 
     if (n_rules == 0) {
         destroy_subtable(cls, subtable);
@@ -1544,6 +1681,11 @@ insert_subtable(struct classifier *cls, const struct minimask *mask)
     size_t count = miniflow_n_values(&mask->masks);
 
     subtable = xzalloc(sizeof *subtable + MINIFLOW_VALUES_SIZE(count));
+        // Add by Roozbeh Eskandari
+    subtable->subtable_cuckoo_num_buckets = 1024; // چون این برای یک ماسک خاص است، می‌تواند کوچکتر از گلوبال باشد
+    subtable->subtable_cuckoo = xzalloc(subtable->subtable_cuckoo_num_buckets * sizeof *subtable->subtable_cuckoo);
+    subtable->subtable_cuckoo_seed = random_uint32();
+    // end
     cmap_init(&subtable->rules);
     miniflow_clone(CONST_CAST(struct miniflow *, &subtable->mask.masks),
                    &mask->masks, count);

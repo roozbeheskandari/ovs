@@ -50,6 +50,14 @@ struct cls_subtable {
 
     /* These fields are accessed by all readers. */
     struct cmap rules;                      /* Contains 'cls_match'es. */
+
+    
+    //Add By Roozbeh Eskandari
+    /* --- Per-subtable Cuckoo Filter --- */
+    struct cuckoo_bucket *subtable_cuckoo;
+    size_t subtable_cuckoo_num_buckets; /* چون ساب‌تیبل کوچکتر است، سایز این می‌تواند کمتر باشد */
+    uint32_t subtable_cuckoo_seed;
+    /* ---------------------------------- */
     const struct minimask mask;             /* Wildcards for fields. */
     /* 'mask' must be the last field. */
 };
