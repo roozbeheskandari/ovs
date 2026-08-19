@@ -175,6 +175,62 @@ static inline bool learned_gate_matches(const struct subtable_learned_gate *gate
     return true;
 }
 
+static inline float sigmoid(float z) {
+    return 1.0f / (1.0f + expf(-z));
+}
+
+// تابع پیش‌بینی با RCU-safe snapshot
+static bool learned_gate_predict_rcu(struct cls_subtable *subtable, const struct flow *flow) {
+    struct learned_lr_model *model = ovsrcu_get(struct learned_lr_model *, &subtable->lr_model);
+    
+    if (!model) return true; // اگر مدل نبود، با احتیاط اجازه lookup می‌دهیم
+
+    float x[3] = { (float)flow->nw_proto, (float)ntohl(flow->nw_src), (float)flow->tp_src };
+    float z = model->bias;
+    for(int i=0; i<3; i++) z += model->weights[i] * x[i];
+
+    // فقط اگر احتمال بالای ۹۹٪ بود که match نیست، اجازه skip می‌دهیم
+    return sigmoid(z) > model->threshold; 
+}
+
+
+
+static inline bool learned_gate_predict(const struct learned_model *model, const struct flow *flow) {
+    // استخراج ویژگی‌های ایمن (فقط فیلدهای مهم مثل پروتکل و IP)
+    float x[4] = {
+        (float)flow->nw_proto,
+        (float)(ntohl(flow->nw_src) >> 24), // فقط IP کلاس A
+        (float)flow->tp_src,
+        1.0f // برای bias
+    };
+
+    float z = 0;
+    for(int i = 0; i < 3; i++) z += model->weights[i] * x[i];
+    z += model->bias;
+
+    // اگر احتمال خیلی پایین بود، اجازه skip می‌دهیم (Math-safe prune)
+    return sigmoid(z) > model->threshold;
+}
+
+void update_subtable_model(struct cls_subtable *subtable, float *new_weights, float new_bias) {
+    // ۱. تخصیص حافظه برای مدل جدید
+    struct learned_lr_model *new_model = xmalloc(sizeof *new_model);
+    
+    // ۲. پر کردن مقادیر
+    memcpy(new_model->weights, new_weights, sizeof(new_model->weights));
+    new_model->bias = new_bias;
+    new_model->threshold = 0.01f; // با احتیاط: فقط احتمالات خیلی کم را رد کن
+
+    // ۳. انتشار با RCU (Readerها نسخه قدیمی را می‌بینند تا زمانی که سویچ انجام شود)
+    struct learned_lr_model *old_model = ovsrcu_get_protected(struct learned_lr_model *, &subtable->lr_model);
+    ovsrcu_set(&subtable->model, new_model);
+
+    // ۴. آزادسازی امن مدل قدیمی (بعد از اینکه تمام خواننده‌ها کارشان تمام شد)
+    if (old_model) {
+        ovsrcu_postpone(free, old_model);
+    }
+}
+
 //END
 struct trie_ctx;
 
@@ -1886,6 +1942,38 @@ find_match_wc(const struct cls_subtable *subtable, ovs_version_t version,
               const struct flow *flow, struct trie_ctx *trie_ctx,
               uint32_t n_tries, struct flow_wildcards *wc)
 {
+        // add by Roozbeh Eskandari 
+    // قبل از lookup سنگین:
+struct learned_model *model = ovsrcu_get(struct learned_model *, &subtable->model);
+if (model && !learned_gate_predict(model, flow)) {
+    continue; // Prune ایمن (چون مدل با اطمینان بالا می‌گوید تطابق وجود ندارد)
+}
+// حالاlookup اصلی:
+rule = subtable_find_rule(subtable, flow);
+
+    PVECTOR_FOR_EACH_PRIORITY (subtable, iter, &cls->subtables) 
+    {
+    /* لایه ۱: گیت یادگیرنده */
+    if (!learned_gate_matches(&subtable->learned_gate, flow)) {
+        continue; /* ساب‌تیبل با هزینه ناچیز رد می‌شود */
+    }
+
+    /* لایه ۲: فیلتر کوکو ساب‌تیبل */
+    uint32_t flow_hash = flow_hash_in_minimask(flow, &subtable->mask, subtable->cuckoo_filter->seed);
+    if (!pscf_lookup(subtable->cuckoo_filter, flow_hash)) {
+        continue; /* بدون ورود به مراحل سنگین هش‌تیبل و Trie عبور می‌کنیم */
+    }
+    if (!learned_gate_predict_rcu((struct cls_subtable *)subtable, flow)) {
+        return NULL;
+    }
+    /* مسیر جستجوی نرمال OVS */
+    rule = subtable_find_rule(subtable, flow);
+    if (rule) {
+        /* پیدا شدن تطابق */
+        break;
+    }
+    }
+//END
     if (OVS_UNLIKELY(!wc)) {
         return find_match(subtable, version, flow,
                           flow_hash_in_minimask(flow, &subtable->mask, 0));
@@ -1899,28 +1987,7 @@ find_match_wc(const struct cls_subtable *subtable, ovs_version_t version,
     ovs_be32 ports_mask;
     uint32_t i;
 
-    // add by Roozbeh Eskandari 
-    PVECTOR_FOR_EACH_PRIORITY (subtable, iter, &cls->subtables) 
-    {
-    /* لایه ۱: گیت یادگیرنده */
-    if (!learned_gate_matches(&subtable->learned_gate, flow)) {
-        continue; /* ساب‌تیبل با هزینه ناچیز رد می‌شود */
-    }
 
-    /* لایه ۲: فیلتر کوکو ساب‌تیبل */
-    uint32_t flow_hash = flow_hash_in_minimask(flow, &subtable->mask, subtable->cuckoo_filter->seed);
-    if (!pscf_lookup(subtable->cuckoo_filter, flow_hash)) {
-        continue; /* بدون ورود به مراحل سنگین هش‌تیبل و Trie عبور می‌کنیم */
-    }
-
-    /* مسیر جستجوی نرمال OVS */
-    rule = subtable_find_rule(subtable, flow);
-    if (rule) {
-        /* پیدا شدن تطابق */
-        break;
-    }
-    }
-//END
     /* Try to finish early by checking fields in segments. */
     for (i = 0; i < subtable->n_indices; i++) {
         if (check_tries(trie_ctx, n_tries, subtable->trie_plen,

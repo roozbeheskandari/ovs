@@ -52,6 +52,17 @@ struct subtable_learned_gate {
     bool     active;
 };
 
+struct learned_model {
+    float weights[4]; // وزن‌ها برای featureهای محدود
+    float bias;
+    float threshold;  // حد آستانه برای تصمیم‌گیری
+};
+// اضافه کردن مدل رگرسیون لجستیک
+struct learned_lr_model {
+    float weights[4]; 
+    float bias;
+    float threshold;
+};
 //END
 /* Classifier internal definitions, subject to change at any time. */
 
@@ -87,7 +98,9 @@ struct cls_subtable {
     uint32_t learned_threshold;
     uint8_t learned_model_id;
     struct pscf_filter *cuckoo_filter;
+    struct learned_model *model;
     struct subtable_learned_gate learned_gate;
+    OVSRCU_TYPE(struct learned_lr_model *) lr_model; // RCU-safe pointer
     //END
     
     const struct minimask mask;             /* Wildcards for fields. */
