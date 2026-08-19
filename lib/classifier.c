@@ -179,6 +179,48 @@ static inline float sigmoid(float z) {
     return 1.0f / (1.0f + expf(-z));
 }
 
+static inline float
+learned_lr_score(const struct learned_lr_model *model,
+                 const struct flow *flow)
+{
+    float x[LEARNED_LR_FEATURES];
+
+    x[0] = (float) flow->nw_proto;
+    x[1] = (float) ntohl(flow->nw_src);
+    x[2] = (float) flow->tp_src;
+
+    float z = model->bias;
+
+    for (size_t i = 0; i < LEARNED_LR_FEATURES; i++) {
+        z += model->weights[i] * x[i];
+    }
+
+    return learned_sigmoid(z);
+}
+
+static inline const struct learned_lr_model *
+learned_lr_get(const struct cls_subtable *subtable)
+{
+    return ovsrcu_get(struct learned_lr_model *,
+                      &subtable->lr_model);
+}
+static inline bool
+learned_lr_is_candidate(const struct cls_subtable *subtable,
+                        const struct flow *flow)
+{
+    const struct learned_lr_model *model = learned_lr_get(subtable);
+
+    if (!model) {
+        return true;
+    }
+
+    /*
+     * Logistic Regression احتمالی است.
+     * نتیجهٔ false نباید برای حذف قطعی lookup استفاده شود.
+     */
+    return learned_lr_score(model, flow) >= model->threshold;
+}
+
 // تابع پیش‌بینی با RCU-safe snapshot
 static bool learned_gate_predict_rcu(struct cls_subtable *subtable, const struct flow *flow) {
     struct learned_lr_model *model = ovsrcu_get(struct learned_lr_model *, &subtable->lr_model);
@@ -210,6 +252,31 @@ static inline bool learned_gate_predict(const struct learned_model *model, const
 
     // اگر احتمال خیلی پایین بود، اجازه skip می‌دهیم (Math-safe prune)
     return sigmoid(z) > model->threshold;
+}
+
+static void
+learned_lr_update(struct cls_subtable *subtable,
+                  const float weights[LEARNED_LR_FEATURES],
+                  float bias, float threshold,
+                  uint32_t version)
+{
+    struct learned_lr_model *new_model = xmalloc(sizeof *new_model);
+
+    memcpy(new_model->weights, weights,
+           sizeof new_model->weights);
+    new_model->bias = bias;
+    new_model->threshold = threshold;
+    new_model->version = version;
+
+    struct learned_lr_model *old_model =
+        ovsrcu_get_protected(struct learned_lr_model *,
+                             &subtable->lr_model);
+
+    ovsrcu_set(&subtable->lr_model, new_model);
+
+    if (old_model) {
+        ovsrcu_postpone(free, old_model);
+    }
 }
 
 void update_subtable_model(struct cls_subtable *subtable, float *new_weights, float new_bias) {
@@ -895,8 +962,26 @@ classifier_insert(struct classifier *cls, const struct cls_rule *rule,
                   size_t n_conj)
 {
     // ADd by Roozbeh Eskandari
-    uint32_t flow_hash = flow_hash_in_minimask(&rule->match.flow, &subtable->mask, subtable->cuckoo_filter->seed);
-pscf_insert(subtable->cuckoo_filter, flow_hash);
+    //uint32_t flow_hash = flow_hash_in_minimask(&rule->match.flow, &subtable->mask, subtable->cuckoo_filter->seed);
+//pscf_insert(subtable->cuckoo_filter, flow_hash);
+if (subtable->cuckoo_filter) {
+    uint32_t flow_hash =
+        flow_hash_in_minimask(&rule->match.flow,
+                              &subtable->mask,
+                              subtable->cuckoo_filter->seed);
+
+    bool inserted =
+        pscf_insert(subtable->cuckoo_filter, flow_hash);
+
+    if (!inserted) {
+        /*
+         * Until resize/rebuild exists, the filter is not
+         * trustworthy for hard negative pruning.
+         */
+        subtable->cuckoo_filter->rule_count = 0;
+    }
+}
+
 //END
     const struct cls_rule *displaced_rule
         = classifier_replace(cls, rule, version, conj, n_conj);
@@ -925,8 +1010,17 @@ classifier_remove(struct classifier *cls, const struct cls_rule *cls_rule)
     size_t n_rules;
 
     //Add by Roozbeh Eskandari
-    uint32_t flow_hash = flow_hash_in_minimask(&rule->match.flow, &subtable->mask, subtable->cuckoo_filter->seed);
-pscf_remove(subtable->cuckoo_filter, flow_hash);
+    //uint32_t flow_hash = flow_hash_in_minimask(&rule->match.flow, &subtable->mask, subtable->cuckoo_filter->seed);
+//pscf_remove(subtable->cuckoo_filter, flow_hash);
+    if (subtable->cuckoo_filter) {
+    uint32_t flow_hash =
+        flow_hash_in_minimask(&rule->match.flow,
+                              &subtable->mask,
+                              subtable->cuckoo_filter->seed);
+
+    pscf_remove(subtable->cuckoo_filter, flow_hash);
+}
+
     //END
     rule = get_cls_match_protected(cls_rule);
     if (!rule) {
@@ -1223,6 +1317,49 @@ classifier_lookup__(const struct classifier *cls, ovs_version_t version,
 
         /* Skip subtables with no match, or where the match is lower-priority
          * than some certain match we've already found. */
+         //add by Roozbeh Eskandari
+         /*
+ * Learned LR is advisory only.
+ * It must not cause a hard skip because it may produce
+ * false negatives.
+ */
+const struct learned_lr_model *lr_model =
+    ovsrcu_get(struct learned_lr_model *,
+               &subtable->lr_model);
+
+if (lr_model) {
+    float score = learned_lr_score(lr_model, flow);
+
+    /*
+     * Do not continue here.
+     * The score may be used for counters or ordering,
+     * but normal lookup remains mandatory.
+     */
+    (void) score;
+}
+if (!learned_gate_matches(&subtable->learned_gate, flow)) {
+    continue;
+}
+
+if (subtable->cuckoo_filter) {
+    uint32_t hash = flow_hash_in_minimask(
+        flow, &subtable->mask,
+        subtable->cuckoo_filter->seed);
+
+    if (!pscf_lookup(subtable->cuckoo_filter, hash)) {
+        continue;
+    }
+}
+
+/* learned LR فقط hint باشد، نه hard-prune */
+const struct learned_lr_model *lr_model =
+    ovsrcu_get(struct learned_lr_model *, &subtable->lr_model);
+
+if (lr_model) {
+    (void) learned_lr_score(lr_model, flow);
+}
+
+//END
         match = find_match_wc(subtable, version, flow, trie_ctx, n_tries, wc);
         if (!match || match->priority <= hard_pri) {
             continue;
@@ -1763,6 +1900,11 @@ insert_subtable(struct classifier *cls, const struct minimask *mask)
 
     //END
     subtable = xzalloc(sizeof *subtable + MINIFLOW_VALUES_SIZE(count));
+    //Add by Roozbeh Eskandari
+    ovsrcu_init(&subtable->lr_model, NULL);
+    subtable->cuckoo_filter = pscf_create(PSCF_DEFAULT_BUCKETS);
+
+    //END
     cmap_init(&subtable->rules);
     miniflow_clone(CONST_CAST(struct miniflow *, &subtable->mask.masks),
                    &mask->masks, count);
@@ -1822,7 +1964,18 @@ destroy_subtable(struct classifier *cls, struct cls_subtable *subtable)
     cmap_remove(&cls->subtables_map, &subtable->cmap_node,
                 minimask_hash(&subtable->mask, 0));
     //Add by Roozbeh Eskandari
+    struct learned_lr_model *model =
+    ovsrcu_get_protected(struct learned_lr_model *,
+                         &subtable->lr_model);
+
+    ovsrcu_set(&subtable->lr_model, NULL);
+
+    if (model) {
+        ovsrcu_postpone(free, model);
+    }
+
     pscf_destroy(subtable->cuckoo_filter);
+    subtable->cuckoo_filter = NULL;
         //END
     ovsrcu_postpone(subtable_destroy_cb, subtable);
 }
@@ -1942,7 +2095,7 @@ find_match_wc(const struct cls_subtable *subtable, ovs_version_t version,
               const struct flow *flow, struct trie_ctx *trie_ctx,
               uint32_t n_tries, struct flow_wildcards *wc)
 {
-        // add by Roozbeh Eskandari 
+       /* // add by Roozbeh Eskandari 
     // قبل از lookup سنگین:
 struct learned_model *model = ovsrcu_get(struct learned_model *, &subtable->model);
 if (model && !learned_gate_predict(model, flow)) {
@@ -1953,27 +2106,27 @@ rule = subtable_find_rule(subtable, flow);
 
     PVECTOR_FOR_EACH_PRIORITY (subtable, iter, &cls->subtables) 
     {
-    /* لایه ۱: گیت یادگیرنده */
+    //* لایه ۱: گیت یادگیرنده 
     if (!learned_gate_matches(&subtable->learned_gate, flow)) {
-        continue; /* ساب‌تیبل با هزینه ناچیز رد می‌شود */
+        continue; /* ساب‌تیبل با هزینه ناچیز رد می‌شود 
     }
 
-    /* لایه ۲: فیلتر کوکو ساب‌تیبل */
+    /* لایه ۲: فیلتر کوکو ساب‌تیبل 
     uint32_t flow_hash = flow_hash_in_minimask(flow, &subtable->mask, subtable->cuckoo_filter->seed);
     if (!pscf_lookup(subtable->cuckoo_filter, flow_hash)) {
-        continue; /* بدون ورود به مراحل سنگین هش‌تیبل و Trie عبور می‌کنیم */
+        continue; /* بدون ورود به مراحل سنگین هش‌تیبل و Trie عبور می‌کنیم 
     }
     if (!learned_gate_predict_rcu((struct cls_subtable *)subtable, flow)) {
         return NULL;
     }
-    /* مسیر جستجوی نرمال OVS */
+    /* مسیر جستجوی نرمال OVS 
     rule = subtable_find_rule(subtable, flow);
     if (rule) {
-        /* پیدا شدن تطابق */
+        /* پیدا شدن تطابق 
         break;
     }
     }
-//END
+//END*/
     if (OVS_UNLIKELY(!wc)) {
         return find_match(subtable, version, flow,
                           flow_hash_in_minimask(flow, &subtable->mask, 0));

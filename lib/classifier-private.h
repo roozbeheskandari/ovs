@@ -62,6 +62,7 @@ struct learned_lr_model {
     float weights[4]; 
     float bias;
     float threshold;
+    uint32_t version;
 };
 //END
 /* Classifier internal definitions, subject to change at any time. */
@@ -92,13 +93,13 @@ struct cls_subtable {
     /* These fields are accessed by all readers. */
     struct cmap rules;                      /* Contains 'cls_match'es. */
         //Add By Roozbeh Eskandari
-    struct cuckoo_bucket *cuckoo;
-    size_t cuckoo_num_buckets;
-    uint32_t cuckoo_seed;
-    uint32_t learned_threshold;
-    uint8_t learned_model_id;
+    //struct cuckoo_bucket *cuckoo;
+    //size_t cuckoo_num_buckets;
+    //uint32_t cuckoo_seed;
+    //uint32_t learned_threshold;
+    //uint8_t learned_model_id;
     struct pscf_filter *cuckoo_filter;
-    struct learned_model *model;
+    //struct learned_model *model;
     struct subtable_learned_gate learned_gate;
     OVSRCU_TYPE(struct learned_lr_model *) lr_model; // RCU-safe pointer
     //END
