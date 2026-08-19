@@ -273,6 +273,12 @@
 extern "C" {
 #endif
 
+
+//Add By Roozbeh Eskandari
+struct cuckoo_bucket *global_cuckoo;
+size_t cuckoo_num_buckets;
+//END
+
 /* Classifier internal data structures. */
 struct cls_subtable;
 struct cls_match;

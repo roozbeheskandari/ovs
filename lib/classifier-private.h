@@ -23,6 +23,36 @@
 #include "hash.h"
 #include "rculist.h"
 
+//Add by Roozbeh Eskandari
+/* ========================================================================= */
+/* --- Cuckoo & Learned Filter Extensions for Per-Subtable Acceleration --- */
+/* ========================================================================= */
+
+#define PSCF_BUCKET_SIZE       4
+#define PSCF_MAX_KICKS         500
+#define PSCF_DEFAULT_BUCKETS   1024
+
+/* تعریف Bucket برای فیلتر کوکو (هر اسلات شامل یک فینگرپرینت ۱۶ بیتی) */
+struct pscf_bucket {
+    uint16_t fingerprints[PSCF_BUCKET_SIZE];
+};
+
+/* متادیتای ساختار فیلتر اختصاصی هر Subtable */
+struct pscf_filter {
+    struct pscf_bucket *buckets;
+    size_t num_buckets;
+    uint32_t seed;
+    uint32_t rule_count;
+};
+
+/* متادیتای Learned Gate جهت تصمیم‌گیری سریع */
+struct subtable_learned_gate {
+    uint32_t ip_prefix_mask;
+    uint8_t  target_nw_proto;
+    bool     active;
+};
+
+//END
 /* Classifier internal definitions, subject to change at any time. */
 
 /* A set of rules that all have the same fields wildcarded. */
@@ -50,8 +80,19 @@ struct cls_subtable {
 
     /* These fields are accessed by all readers. */
     struct cmap rules;                      /* Contains 'cls_match'es. */
+        //Add By Roozbeh Eskandari
+    struct cuckoo_bucket *cuckoo;
+    size_t cuckoo_num_buckets;
+    uint32_t cuckoo_seed;
+    uint32_t learned_threshold;
+    uint8_t learned_model_id;
+    struct pscf_filter *cuckoo_filter;
+    struct subtable_learned_gate learned_gate;
+    //END
+    
     const struct minimask mask;             /* Wildcards for fields. */
     /* 'mask' must be the last field. */
+
 };
 
 /* Internal representation of a rule in a "struct cls_subtable".

@@ -26,6 +26,156 @@
 #include "packets.h"
 #include "util.h"
 
+
+//Add by Roozbeh Eskandari
+/* ========================================================================= */
+/*                   PSCF & Learned Gate Core Implementation                 */
+/* ========================================================================= */
+
+static inline uint16_t pscf_get_fingerprint(uint32_t hash) {
+    uint16_t fp = (uint16_t)(hash ^ (hash >> 16));
+    return fp == 0 ? 1 : fp; /* صفر رزرو شده برای اسلات خالی است */
+}
+
+static inline uint32_t pscf_hash_index(uint32_t hash, size_t num_buckets) {
+    return hash % num_buckets;
+}
+
+static inline uint32_t pscf_alt_index(uint32_t index, uint16_t fp, size_t num_buckets) {
+    /* ضریب همروندسازی استاندارد (Murmur-like constant) */
+    return (index ^ (fp * 0x5bd1e995)) % num_buckets;
+}
+
+/* تخصیص و ایجاد فیلتر کوکو برای ساب‌تیبل */
+static struct pscf_filter *pscf_create(size_t initial_buckets) {
+    struct pscf_filter *filter = xzalloc(sizeof *filter);
+    filter->num_buckets = initial_buckets > 0 ? initial_buckets : PSCF_DEFAULT_BUCKETS;
+    filter->buckets = xzalloc(filter->num_buckets * sizeof(struct pscf_bucket));
+    filter->seed = random_uint32();
+    filter->rule_count = 0;
+    return filter;
+}
+
+static void pscf_destroy(struct pscf_filter *filter) {
+    if (filter) {
+        free(filter->buckets);
+        free(filter);
+    }
+}
+
+/* جستجوی فینگرپرینت در دو باکت کاندید */
+static inline bool pscf_lookup(const struct pscf_filter *filter, uint32_t hash) {
+    if (!filter || !filter->buckets) {
+        return true; /* در صورت نبود فیلتر، به مسیر نرمال اجازه عبور می‌دهیم */
+    }
+
+    uint16_t fp = pscf_get_fingerprint(hash);
+    uint32_t i1 = pscf_hash_index(hash, filter->num_buckets);
+    uint32_t i2 = pscf_alt_index(i1, fp, filter->num_buckets);
+
+    /* پویش باکت اول */
+    for (int i = 0; i < PSCF_BUCKET_SIZE; i++) {
+        if (filter->buckets[i1].fingerprints[i] == fp) {
+            return true;
+        }
+    }
+    /* پویش باکت دوم */
+    for (int i = 0; i < PSCF_BUCKET_SIZE; i++) {
+        if (filter->buckets[i2].fingerprints[i] == fp) {
+            return true;
+        }
+    }
+    return false; /* قطعا عضو نیست (Early Miss/Prune) */
+}
+
+/* درج فینگرپرینت در فیلتر */
+static bool pscf_insert(struct pscf_filter *filter, uint32_t hash) {
+    if (!filter || !filter->buckets) return false;
+
+    uint16_t fp = pscf_get_fingerprint(hash);
+    uint32_t i1 = pscf_hash_index(hash, filter->num_buckets);
+    uint32_t i2 = pscf_alt_index(i1, fp, filter->num_buckets);
+
+    /* بررسی فضای خالی در باکت اول و دوم */
+    for (int i = 0; i < PSCF_BUCKET_SIZE; i++) {
+        if (filter->buckets[i1].fingerprints[i] == 0) {
+            filter->buckets[i1].fingerprints[i] = fp;
+            filter->rule_count++;
+            return true;
+        }
+    }
+    for (int i = 0; i < PSCF_BUCKET_SIZE; i++) {
+        if (filter->buckets[i2].fingerprints[i] == 0) {
+            filter->buckets[i2].fingerprints[i] = fp;
+            filter->rule_count++;
+            return true;
+        }
+    }
+
+    /* الگوریتم Kicking در صورت پر بودن هر دو باکت */
+    uint32_t curr_idx = (random_uint32() % 2 == 0) ? i1 : i2;
+    uint16_t curr_fp = fp;
+
+    for (int kick = 0; kick < PSCF_MAX_KICKS; kick++) {
+        int slot = random_uint32() % PSCF_BUCKET_SIZE;
+        uint16_t displaced_fp = filter->buckets[curr_idx].fingerprints[slot];
+        filter->buckets[curr_idx].fingerprints[slot] = curr_fp;
+
+        curr_fp = displaced_fp;
+        curr_idx = pscf_alt_index(curr_idx, curr_fp, filter->num_buckets);
+
+        for (int i = 0; i < PSCF_BUCKET_SIZE; i++) {
+            if (filter->buckets[curr_idx].fingerprints[i] == 0) {
+                filter->buckets[curr_idx].fingerprints[i] = curr_fp;
+                filter->rule_count++;
+                return true;
+            }
+        }
+    }
+    /* فیلتر اشباع شده و نیاز به Rehash/Resize دارد */
+    return false;
+}
+
+/* حذف فینگرپرینت جهت جلوگیری از Stale شدن داده‌ها */
+static bool pscf_remove(struct pscf_filter *filter, uint32_t hash) {
+    if (!filter || !filter->buckets) return false;
+
+    uint16_t fp = pscf_get_fingerprint(hash);
+    uint32_t i1 = pscf_hash_index(hash, filter->num_buckets);
+    uint32_t i2 = pscf_alt_index(i1, fp, filter->num_buckets);
+
+    for (int i = 0; i < PSCF_BUCKET_SIZE; i++) {
+        if (filter->buckets[i1].fingerprints[i] == fp) {
+            filter->buckets[i1].fingerprints[i] = 0;
+            filter->rule_count--;
+            return true;
+        }
+    }
+    for (int i = 0; i < PSCF_BUCKET_SIZE; i++) {
+        if (filter->buckets[i2].fingerprints[i] == fp) {
+            filter->buckets[i2].fingerprints[i] = 0;
+            filter->rule_count--;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* لایه ۱: فیلتر یادگیرنده فوق‌سریع (Learned Early Gate) */
+static inline bool learned_gate_matches(const struct subtable_learned_gate *gate, const struct flow *flow) {
+    if (!gate->active) {
+        return true;
+    }
+    if (gate->target_nw_proto && flow->nw_proto != gate->target_nw_proto) {
+        return false;
+    }
+    if (gate->ip_prefix_mask && ((ntohl(flow->nw_src) & gate->ip_prefix_mask) == 0)) {
+        return false;
+    }
+    return true;
+}
+
+//END
 struct trie_ctx;
 
 /* A collection of "struct cls_conjunction"s currently embedded into a
@@ -688,6 +838,10 @@ classifier_insert(struct classifier *cls, const struct cls_rule *rule,
                   ovs_version_t version, const struct cls_conjunction conj[],
                   size_t n_conj)
 {
+    // ADd by Roozbeh Eskandari
+    uint32_t flow_hash = flow_hash_in_minimask(&rule->match.flow, &subtable->mask, subtable->cuckoo_filter->seed);
+pscf_insert(subtable->cuckoo_filter, flow_hash);
+//END
     const struct cls_rule *displaced_rule
         = classifier_replace(cls, rule, version, conj, n_conj);
     ovs_assert(!displaced_rule);
@@ -714,6 +868,10 @@ classifier_remove(struct classifier *cls, const struct cls_rule *cls_rule)
     uint8_t n_indices;
     size_t n_rules;
 
+    //Add by Roozbeh Eskandari
+    uint32_t flow_hash = flow_hash_in_minimask(&rule->match.flow, &subtable->mask, subtable->cuckoo_filter->seed);
+pscf_remove(subtable->cuckoo_filter, flow_hash);
+    //END
     rule = get_cls_match_protected(cls_rule);
     if (!rule) {
         return false;
@@ -1543,6 +1701,11 @@ insert_subtable(struct classifier *cls, const struct minimask *mask)
     uint8_t prev;
     size_t count = miniflow_n_values(&mask->masks);
 
+    //Add By Roozbeh Eskandari
+    subtable->cuckoo_filter = pscf_create(PSCF_DEFAULT_BUCKETS);
+    subtable->learned_gate.active = false;
+
+    //END
     subtable = xzalloc(sizeof *subtable + MINIFLOW_VALUES_SIZE(count));
     cmap_init(&subtable->rules);
     miniflow_clone(CONST_CAST(struct miniflow *, &subtable->mask.masks),
@@ -1602,7 +1765,9 @@ destroy_subtable(struct classifier *cls, struct cls_subtable *subtable)
     pvector_remove(&cls->subtables, subtable);
     cmap_remove(&cls->subtables_map, &subtable->cmap_node,
                 minimask_hash(&subtable->mask, 0));
-
+    //Add by Roozbeh Eskandari
+    pscf_destroy(subtable->cuckoo_filter);
+        //END
     ovsrcu_postpone(subtable_destroy_cb, subtable);
 }
 
@@ -1734,6 +1899,28 @@ find_match_wc(const struct cls_subtable *subtable, ovs_version_t version,
     ovs_be32 ports_mask;
     uint32_t i;
 
+    // add by Roozbeh Eskandari 
+    PVECTOR_FOR_EACH_PRIORITY (subtable, iter, &cls->subtables) 
+    {
+    /* لایه ۱: گیت یادگیرنده */
+    if (!learned_gate_matches(&subtable->learned_gate, flow)) {
+        continue; /* ساب‌تیبل با هزینه ناچیز رد می‌شود */
+    }
+
+    /* لایه ۲: فیلتر کوکو ساب‌تیبل */
+    uint32_t flow_hash = flow_hash_in_minimask(flow, &subtable->mask, subtable->cuckoo_filter->seed);
+    if (!pscf_lookup(subtable->cuckoo_filter, flow_hash)) {
+        continue; /* بدون ورود به مراحل سنگین هش‌تیبل و Trie عبور می‌کنیم */
+    }
+
+    /* مسیر جستجوی نرمال OVS */
+    rule = subtable_find_rule(subtable, flow);
+    if (rule) {
+        /* پیدا شدن تطابق */
+        break;
+    }
+    }
+//END
     /* Try to finish early by checking fields in segments. */
     for (i = 0; i < subtable->n_indices; i++) {
         if (check_tries(trie_ctx, n_tries, subtable->trie_plen,
