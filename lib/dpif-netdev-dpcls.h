@@ -17,7 +17,10 @@
 
 #ifndef DPIF_NETDEV_DPCLS_H
 #define DPIF_NETDEV_DPCLS_H 1
-
+//Roozbeh
+#include "dpif-netdev-ai.h"
+#include "cuckoo-filter.h"
+//END
 #include "dpif.h"
 
 #include <stdbool.h>
@@ -68,7 +71,15 @@ uint32_t (*dpcls_subtable_lookup_func)(struct dpcls_subtable *subtable,
  */
 dpcls_subtable_lookup_func dpcls_subtable_lookup_probe(uint32_t u0_bits,
                                                        uint32_t u1_bits);
-
+//Roozbeh
+/* --- START: Added for Learned Gate --- */
+#define MAX_FEATURES 10
+struct learned_gate_model {
+    float weights[MAX_FEATURES];
+    float bias;
+};
+/* --- END: Added for Learned Gate --- */
+//END
 /* A set of rules that all have the same fields wildcarded. */
 struct dpcls_subtable {
     /* The fields are only used by writers. */
@@ -79,6 +90,14 @@ struct dpcls_subtable {
     uint32_t hit_cnt;            /* Number of match hits in subtable in current
                                     optimization interval. */
 
+
+    //Roozbeh
+    /* --- START: Added for Cuckoo and Learned Gate --- */
+    void *subtable_filter; // Pointer to Per-Subtable Cuckoo Filter instance
+    OVSRCU_TYPE(struct learned_gate_model *) gate_model; // RCU-protected model
+    /* --- END: Added for Cuckoo and Learned Gate --- */
+    //END
+    
     /* Miniflow fingerprint that the subtable matches on. The miniflow "bits"
      * are used to select the actual dpcls lookup implementation at subtable
      * creation time.

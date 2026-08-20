@@ -13,7 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
+//Roozbeh
+#include "dpif-netdev-ai.h"
+#include "cuckoo-filter.h"
+//END
 #include <config.h>
 #include "dpif-netdev.h"
 
@@ -189,6 +192,11 @@ struct pmd_sleep {
 struct dpcls {
     struct cmap_node node;      /* Within dp_netdev_pmd_thread.classifiers */
     odp_port_t in_port;
+    //Roozbeh
+    /* --- START: Added for Global Cuckoo Filter --- */
+    void *global_filter; // Pointer to Global Cuckoo Filter instance
+    /* --- END: Added for Global Cuckoo Filter --- */
+    //END
     struct cmap subtables_map;
     struct pvector subtables;
 };
@@ -9008,6 +9016,19 @@ dpif_dummy_register(enum dummy_level level)
 static void
 dpcls_subtable_destroy_cb(struct dpcls_subtable *subtable)
 {
+    //Roozbeh
+    /* آزادسازی فیلتر اختصاصی */
+    if (subtable->subtable_filter) {
+        // فیلتر کوکو نیز در صف آزادسازی قرار می‌گیرد
+        ovsrcu_postpone(cuckoo_filter_destroy, subtable->subtable_filter);
+    }
+    
+    /* آزادسازی مدل هوش مصنوعی با RCU */
+    struct learned_gate_model *model = ovsrcu_get_protected(struct learned_gate_model *, &subtable->gate_model);
+    if (model) {
+        ovsrcu_postpone(learned_gate_model_destroy, model);
+    }
+    //END
     cmap_destroy(&subtable->rules);
     ovsrcu_postpone(free, subtable->mf_masks);
     ovsrcu_postpone(free, subtable);
@@ -9020,6 +9041,10 @@ dpcls_init(struct dpcls *cls)
 {
     cmap_init(&cls->subtables_map);
     pvector_init(&cls->subtables);
+    //Roozbeh
+    /* مقداردهی فیلتر سراسری با ظرفیت دلخواه مثلا ۱۰۰ هزار رکورد */
+    cls->global_filter = cuckoo_filter_create(100000);
+    //END
 }
 
 static void
@@ -9047,6 +9072,10 @@ dpcls_destroy(struct dpcls *cls)
         }
         cmap_destroy(&cls->subtables_map);
         pvector_destroy(&cls->subtables);
+        //Roozbeh
+                /* پاکسازی فیلتر سراسری */
+        cuckoo_filter_destroy((struct cuckoo_filter *) cls->global_filter);
+        //END
     }
 }
 
@@ -9060,6 +9089,12 @@ dpcls_create_subtable(struct dpcls *cls, const struct netdev_flow_key *mask)
                        - sizeof subtable->mask.mf + mask->len);
     cmap_init(&subtable->rules);
     subtable->hit_cnt = 0;
+    //Roozbeh
+        /* مقداردهی فیلتر اختصاصی زیرجدول و مدل یادگیری ماشین */
+    subtable->subtable_filter = cuckoo_filter_create(10000); // ظرفیت فیلتر محلی
+    struct learned_gate_model *initial_model = learned_gate_model_create();
+    ovsrcu_set(&subtable->gate_model, initial_model);
+    //END
     netdev_flow_key_clone(&subtable->mask, mask);
 
     /* The count of bits in the mask defines the space required for masks.
@@ -9315,7 +9350,32 @@ dpcls_rule_matches_key(const struct dpcls_rule *rule,
  * priorities, instead returning any rule which matches the flow.
  *
  * Returns true if all miniflows found a corresponding rule. */
-bool
+
+ //Roozbeh
+/* --- START: Helper Struct for Sorting --- */
+struct scored_subtable {
+    struct dpcls_subtable *subtable;
+    float score;
+};
+
+static int
+compare_subtable_scores(const void *a, const void *b)
+{
+    const struct scored_subtable *sa = a;
+    const struct scored_subtable *sb = b;
+    if (sa->score > sb->score) return -1;
+    if (sa->score < sb->score) return 1;
+    return 0;
+}
+
+/* Prototype for your external functions (implement these separately) */
+extern bool global_cuckoo_filter_lookup(void *filter, uint32_t hash);
+extern float calculate_learned_score(struct learned_gate_model *model, const struct netdev_flow_key *key);
+/* --- END: Helper Struct for Sorting --- */
+ //END
+
+
+ bool
 dpcls_lookup(struct dpcls *cls, const struct netdev_flow_key *keys[],
              struct dpcls_rule **rules, const size_t cnt,
              int *num_lookups_p)
@@ -9337,6 +9397,53 @@ dpcls_lookup(struct dpcls *cls, const struct netdev_flow_key *keys[],
     int lookups_match = 0, subtable_pos = 1;
     uint32_t found_map;
 
+    //Roozbeh
+
+    /* --- START: Tier-2 Step 1: Global Cuckoo Filter --- */
+    uint32_t global_reject_map = 0;
+    if (cls->global_filter) {
+        for (size_t i = 0; i < cnt; i++) {
+            if (keys_map & (1U << i)) {
+                if (!global_cuckoo_filter_lookup(cls->global_filter, keys[i]->hash)) {
+                    global_reject_map |= (1U << i);
+                }
+            }
+        }
+    }
+    keys_map &= ~global_reject_map;
+    if (!keys_map) {
+        if (num_lookups_p) {
+            *num_lookups_p = 0; // Filtered everything out
+        }
+        return true; 
+    }
+    /* --- END: Tier-2 Step 1 --- */
+
+    /* --- START: Tier-2 Step 2: Learned Gate Scoring --- */
+    size_t num_subtables = pvector_count(&cls->subtables);
+    struct scored_subtable *sorted_subtables = xmalloc(num_subtables * sizeof *sorted_subtables);
+
+    size_t i = 0;
+    PVECTOR_FOR_EACH (subtable, &cls->subtables) {
+        struct learned_gate_model *model = ovsrcu_get(struct learned_gate_model *, &subtable->gate_model);
+        sorted_subtables[i].subtable = subtable;
+        
+        // Use the first active key for scoring as a representative packet in the batch
+        size_t first_active_idx = ctz32(keys_map); 
+        if (model) {
+            sorted_subtables[i].score = calculate_learned_score(model, keys[first_active_idx]);
+        } else {
+            sorted_subtables[i].score = (float)subtable->hit_cnt; // Fallback to hit count
+        }
+        i++;
+    }
+
+    qsort(sorted_subtables, num_subtables, sizeof *sorted_subtables, compare_subtable_scores);
+    /* --- END: Tier-2 Step 2 --- */
+
+
+    //END
+
     /* The Datapath classifier - aka dpcls - is composed of subtables.
      * Subtables are dynamically created as needed when new rules are inserted.
      * Each subtable collects rules with matches on a specific subset of packet
@@ -9344,28 +9451,42 @@ dpcls_lookup(struct dpcls *cls, const struct netdev_flow_key *keys[],
      * search-key against each subtable, but when a match is found for a
      * search-key, the search for that key can stop because the rules are
      * non-overlapping. */
-    PVECTOR_FOR_EACH (subtable, &cls->subtables) {
+    //PVECTOR_FOR_EACH (subtable, &cls->subtables) {
         /* Call the subtable specific lookup function. */
-        found_map = subtable->lookup_func(subtable, keys_map, keys, rules);
+        //Roozbeh
+        int subtable_pos =1 ;
+        for (i=0; i < num_subtables; i++)
+        {
+            subtable = stored_subtables[i].subtable;
+            found_map = subtable->lookup_func(subtable, keys_map, keys, rules);
 
         /* Count the number of subtables searched for this packet match. This
          * estimates the "spread" of subtables looked at per matched packet. */
-        uint32_t pkts_matched = count_1bits(found_map);
-        lookups_match += pkts_matched * subtable_pos;
+            uint32_t pkts_matched = count_1bits(found_map);
+            lookups_match += pkts_matched * subtable_pos;
 
         /* Clear the found rules, and return early if all packets are found. */
-        keys_map &= ~found_map;
-        if (!keys_map) {
-            if (num_lookups_p) {
-                *num_lookups_p = lookups_match;
+            keys_map &= ~found_map;
+            if (!keys_map) {
+            //comment by roozbeh Eskandari
+            //if (num_lookups_p) {
+              //  *num_lookups_p = lookups_match;
+              //Roozbeh ADd
+                break;
+              //end
             }
-            return true;
+           // return true;
+        //}
+            subtable_pos++;
         }
-        subtable_pos++;
-    }
-
+    //Roozbeh
+    free(sorted_subtables);
+    //END
     if (num_lookups_p) {
         *num_lookups_p = lookups_match;
     }
-    return false;
+   // return false;
+   //Roozbeh
+   return (keys_map == 0);
+   //END
 }

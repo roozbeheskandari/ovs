@@ -216,6 +216,27 @@ lookup_impl(struct dpcls_subtable *subtable,
         hashes[i] = hash_finish(hash, bit_count_total * 8);
     }
 
+    //Roozbeh
+    /* --- START: Tier-2 Step 3: Per-Subtable Cuckoo Filter --- */
+    // Prototype for your external function
+    extern bool per_subtable_cuckoo_filter_lookup(void *filter, uint32_t hash);
+
+    uint32_t subtable_reject_map = 0;
+    if (subtable->subtable_filter) {
+        ULLONG_FOR_EACH_1 (i, keys_map) {
+            if (!per_subtable_cuckoo_filter_lookup(subtable->subtable_filter, hashes[i])) {
+                subtable_reject_map |= (1U << i);
+            }
+        }
+    }
+    keys_map &= ~subtable_reject_map;
+    
+    if (!keys_map) {
+        return 0; // All remaining packets rejected by this subtable's cuckoo filter
+    }
+    /* --- END: Tier-2 Step 3 --- */
+    //END
+
     /* Lookup: this returns a bitmask of packets where the hash table had
      * an entry for the given hash key. Presence of a hash key does not
      * guarantee matching the key, as there can be hash collisions.
