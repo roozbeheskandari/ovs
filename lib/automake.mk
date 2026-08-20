@@ -65,6 +65,8 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/csum.h \
 	lib/ct-dpif.c \
 	lib/ct-dpif.h \
+	lib/cuckoo-filter.h \
+	lib/cuckoo-filter.c \
 	lib/daemon.c \
 	lib/daemon.h \
 	lib/daemon-private.h \
@@ -82,6 +84,8 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/dp-packet-gso.c \
 	lib/dp-packet-gso.h \
 	lib/dpdk.h \
+	lib/dpif-netdev-ai.h \
+	lib/dpif-netdev-ai.c \
 	lib/dpif-netdev-dfc.c \
 	lib/dpif-netdev-dfc.h \
 	lib/dpif-netdev-dpcls.c \
