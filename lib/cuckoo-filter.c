@@ -1,7 +1,12 @@
     #include <config.h>
+    #include <stdint.h>
+
     #include "cuckoo-filter.h"
-    #include "openvswitch/util.h"
+    #include "util.h"
     #include "random.h"
+	#include "openvswitch/vlog.h"
+
+	VLOG_DEFINE_THIS_MODULE(cuckoo_filter);
 
     static inline uint16_t get_fingerprint(uint32_t hash) {
         uint16_t fp = hash & 0xFFFF;
@@ -12,7 +17,7 @@
         *i1 = (hash) % num_buckets;
         *i2 = ((*i1) ^ (fp * 0x5bd1e995)) % num_buckets;
     }
-
+/*
     struct cuckoo_filter *cuckoo_filter_create(size_t capacity) {
         size_t num_buckets = capacity / CUCKOO_BUCKET_SIZE;
         if (num_buckets == 0) num_buckets = 1;
@@ -22,6 +27,37 @@
         cf->count = 0;
         return cf;
     }
+*/
+struct cuckoo_filter *
+cuckoo_filter_create(size_t capacity)
+{
+    size_t num_buckets = capacity / CUCKOO_BUCKET_SIZE;
+
+    if (capacity % CUCKOO_BUCKET_SIZE) {
+        num_buckets++;
+    }
+
+    if (num_buckets == 0) {
+        num_buckets = 1;
+    }
+ 	struct cuckoo_filter *cf = xzalloc(sizeof *cf);
+    if (num_buckets > SIZE_MAX / sizeof *cf->buckets) {
+        VLOG_ERR("Cuckoo filter allocation overflow: capacity=%zu, "
+                 "num_buckets=%zu",
+                 capacity, num_buckets);
+                 free(cf);
+        return NULL;
+    }
+
+   
+
+    cf->buckets = xzalloc(num_buckets * sizeof *cf->buckets);
+    cf->num_buckets = num_buckets;
+    cf->count = 0;
+
+    return cf;
+}
+
 
     void cuckoo_filter_destroy(struct cuckoo_filter *cf) {
         if (cf) {
