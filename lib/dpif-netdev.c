@@ -15,7 +15,7 @@
  */
 //Roozbeh
 #include "dpif-netdev-ai.h"
-#include "cuckoo-filter.h"
+//#include "cuckoo-filter.h"
 //END
 #include <config.h>
 #include "dpif-netdev.h"
