@@ -6,9 +6,17 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
+#define CUCKOO_BUCKET_SIZE 4
+#define CUCKOO_MAX_KICKS 500
+
+struct cuckoo_bucket {
+    uint16_t fingerprints[CUCKOO_BUCKET_SIZE];
+};
+
 struct cuckoo_filter {
-    uint8_t *buckets;
+    struct cuckoo_bucket *buckets;
     size_t num_buckets;
+    size_t count;
 };
 
 /* توابع مدیریت فیلتر */
@@ -20,7 +28,7 @@ bool cuckoo_filter_insert(struct cuckoo_filter *cf, uint32_t hash);
 bool cuckoo_filter_lookup(struct cuckoo_filter *cf, uint32_t hash);
 
 /* توابع پوششی برای اتصال به dpcls */
-bool global_cuckoo_filter_lookup(void *filter, uint32_t hash);
-bool per_subtable_cuckoo_filter_lookup(void *filter, uint32_t hash);
+//bool global_cuckoo_filter_lookup(void *filter, uint32_t hash);
+//bool per_subtable_cuckoo_filter_lookup(void *filter, uint32_t hash);
 
 #endif /* CUCKOO_FILTER_H */

@@ -11,7 +11,7 @@
 /* یک پیاده‌سازی ساده برای Cuckoo Filter. برای مقالات سطح بالا (Q1) 
  * بهتر است از کتابخانه‌های بهینه SIMD استفاده کنید، اما این ساختار پایه است. */
 
-#define CUCKOO_BUCKET_SIZE 4
+/*#define CUCKOO_BUCKET_SIZE 4
 #define CUCKOO_MAX_KICKS 500
 
 struct cuckoo_bucket {
@@ -23,7 +23,7 @@ struct cuckoo_filter {
     size_t num_buckets;
     size_t count;
 };
-
+*/
 /* توابع Cuckoo Filter */
 struct cuckoo_filter *cuckoo_filter_create(size_t max_capacity);
 void cuckoo_filter_destroy(struct cuckoo_filter *cf);

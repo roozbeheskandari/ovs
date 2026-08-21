@@ -26,7 +26,7 @@ static size_t alt_index(size_t index, uint16_t fp, size_t num_buckets) {
     uint32_t fp_hash = hash_bytes(&fp, sizeof fp, 0);
     return (index ^ fp_hash) % num_buckets;
 }
-
+/*
 struct cuckoo_filter *cuckoo_filter_create(size_t max_capacity) {
     struct cuckoo_filter *cf = xzalloc(sizeof *cf);
     // Calculate buckets needed, rounding up to nearest power of 2 is preferred, but simple modulo works for now.
@@ -99,7 +99,7 @@ bool cuckoo_filter_lookup(struct cuckoo_filter *cf, uint32_t hash) {
         }
     }
     return false;
-}
+}*/
 
 /* Wrappers used by dpif-netdev.c and dpif-netdev-dpcls.c */
 bool global_cuckoo_filter_lookup(void *filter, uint32_t hash) {
