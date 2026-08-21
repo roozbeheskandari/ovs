@@ -65,6 +65,8 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/csum.h \
 	lib/ct-dpif.c \
 	lib/ct-dpif.h \
+	lib/cuckoo-filter.c \
+    lib/cuckoo-filter.h \
 	lib/daemon.c \
 	lib/daemon.h \
 	lib/daemon-private.h \

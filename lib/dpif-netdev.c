@@ -9008,6 +9008,9 @@ dpif_dummy_register(enum dummy_level level)
 static void
 dpcls_subtable_destroy_cb(struct dpcls_subtable *subtable)
 {
+    if (subtable->subtable_filter) {
+        cuckoo_filter_destroy(subtable->subtable_filter);
+    }
     cmap_destroy(&subtable->rules);
     ovsrcu_postpone(free, subtable->mf_masks);
     ovsrcu_postpone(free, subtable);
@@ -9058,6 +9061,7 @@ dpcls_create_subtable(struct dpcls *cls, const struct netdev_flow_key *mask)
     /* Need to add one. */
     subtable = xmalloc(sizeof *subtable
                        - sizeof subtable->mask.mf + mask->len);
+    subtable->subtable_filter = cuckoo_filter_create(1024);
     cmap_init(&subtable->rules);
     subtable->hit_cnt = 0;
     netdev_flow_key_clone(&subtable->mask, mask);
@@ -9231,6 +9235,9 @@ dpcls_insert(struct dpcls *cls, struct dpcls_rule *rule,
     /* Refer to subtable's mask, also for later removal. */
     rule->mask = &subtable->mask;
     cmap_insert(&subtable->rules, &rule->cmap_node, rule->flow.hash);
+    if (subtable->subtable_filter) {
+        cuckoo_filter_insert(subtable->subtable_filter, rule->cmap_node.hash);
+    }
 }
 
 /* Removes 'rule' from 'cls', also destructing the 'rule'. */
