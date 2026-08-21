@@ -9236,7 +9236,7 @@ dpcls_insert(struct dpcls *cls, struct dpcls_rule *rule,
     rule->mask = &subtable->mask;
     cmap_insert(&subtable->rules, &rule->cmap_node, rule->flow.hash);
     if (subtable->subtable_filter) {
-        cuckoo_filter_insert(subtable->subtable_filter, rule->cmap_node.hash);
+        cuckoo_filter_insert(subtable->subtable_filter, rule->flow.hash);
     }
 }
 
