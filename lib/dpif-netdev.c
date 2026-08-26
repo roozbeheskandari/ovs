@@ -1893,6 +1893,7 @@ dp_netdev_pmd_find_dpcls(struct dp_netdev_pmd_thread *pmd,
         /* Create new classifier for in_port */
         cls = xmalloc(sizeof(*cls));
         dpcls_init(cls);
+        global_cuckoo_filter_init();
         cls->in_port = in_port;
         cmap_insert(&pmd->classifiers, &cls->node, hash);
         VLOG_DBG("Creating dpcls %p for in_port %d", cls, in_port);
@@ -2122,6 +2123,7 @@ dp_netdev_pmd_remove_flow(struct dp_netdev_pmd_thread *pmd,
 
     cls = dp_netdev_pmd_lookup_dpcls(pmd, in_port);
     ovs_assert(cls != NULL);
+    global_cuckoo_filter_remove(&flow->cr.flow);
     dpcls_remove(cls, &flow->cr);
     dp_netdev_simple_match_remove(pmd, flow);
     cmap_remove(&pmd->flow_table, node, dp_netdev_flow_hash(&flow->ufid));
@@ -2528,6 +2530,8 @@ dp_netdev_pmd_lookup_flow(struct dp_netdev_pmd_thread *pmd,
                           const struct netdev_flow_key *key,
                           int *lookup_num_p)
 {
+    struct dp_netdev_ai_result ai_result;
+    bool global_filter_hit;
     struct dpcls *cls;
     struct dpcls_rule *rule = NULL;
     odp_port_t in_port = u32_to_odp(MINIFLOW_GET_U32(&key->mf,
@@ -2536,6 +2540,17 @@ dp_netdev_pmd_lookup_flow(struct dp_netdev_pmd_thread *pmd,
 
     cls = dp_netdev_pmd_lookup_dpcls(pmd, in_port);
     if (OVS_LIKELY(cls)) {
+    ai_result = dp_netdev_ai_score(&key);
+    global_filter_hit = global_cuckoo_filter_lookup(&key);
+    global_cuckoo_filter_note_policy(ai_result.candidate,
+                                     global_filter_hit);
+
+    /* Correctness rule:
+        *
+    * AI and Global Cuckoo results are advisory only.  Never skip dpcls:
+     * a Cuckoo false positive, a failed insertion, or model error must not
+     * change the forwarding result.
+     */
         dpcls_lookup(cls, &key, &rule, 1, lookup_num_p);
         netdev_flow = dp_netdev_flow_cast(rule);
     }
@@ -3120,7 +3135,7 @@ dp_netdev_flow_add(struct dp_netdev_pmd_thread *pmd,
     /* Select dpcls for in_port. Relies on in_port to be exact match. */
     cls = dp_netdev_pmd_find_dpcls(pmd, in_port);
     dpcls_insert(cls, &flow->cr, &mask);
-
+    global_cuckoo_filter_insert(&flow->cr.flow);
     ds_put_cstr(&extra_info, "miniflow_bits(");
     FLOWMAP_FOR_EACH_UNIT (unit) {
         if (unit) {
@@ -6746,6 +6761,7 @@ dp_netdev_destroy_pmd(struct dp_netdev_pmd_thread *pmd)
     /* All flows (including their dpcls_rules) have been deleted already */
     CMAP_FOR_EACH (cls, node, &pmd->classifiers) {
         dpcls_destroy(cls);
+        global_cuckoo_filter_destroy();
         ovsrcu_postpone(free, cls);
     }
     cmap_destroy(&pmd->classifiers);
@@ -7536,6 +7552,10 @@ fast_path_processing(struct dp_netdev_pmd_thread *pmd,
                      uint8_t *index_map,
                      odp_port_t in_port)
 {
+    size_t i;
+    struct dp_netdev_ai_result ai_result;
+    bool global_filter_hit;
+
     const size_t cnt = dp_packet_batch_size(packets_);
     struct dp_packet *packet;
     struct dpcls *cls;
@@ -7552,6 +7572,15 @@ fast_path_processing(struct dp_netdev_pmd_thread *pmd,
     /* Get the classifier for the in_port */
     cls = dp_netdev_pmd_lookup_dpcls(pmd, in_port);
     if (OVS_LIKELY(cls)) {
+        /* Score and probe every key before dpcls.  Results are telemetry/policy
+         * signals only; all packets continue to the authoritative dpcls lookup. */
+        for (i = 0; i < cnt; i++) {
+            ai_result = dp_netdev_ai_score(keys[i]);
+            global_filter_hit = global_cuckoo_filter_lookup(keys[i]);
+            global_cuckoo_filter_note_policy(ai_result.candidate,
+                                     global_filter_hit);
+        }
+
         any_miss = !dpcls_lookup(cls, (const struct netdev_flow_key **)keys,
                                 rules, cnt, &lookup_cnt);
     } else {
