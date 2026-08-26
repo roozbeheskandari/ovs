@@ -16,7 +16,7 @@
 
 #include <config.h>
 #include "dpif-netdev.h"
-
+#include "dpif-netdev-ai.h"
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -46,6 +46,7 @@
 #include "dpif-netdev-dpcls.h"
 #include "dpif-netdev-flow.h"
 #include "dpif-netdev-perf.h"
+#include "global-cuckoo-filter.h"
 #include "dpif-netdev-thread.h"
 #include "dpif-offload.h"
 #include "dpif-provider.h"
