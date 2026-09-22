@@ -76,6 +76,9 @@ struct dpcls_subtable {
 
     /* These fields are accessed by readers. */
     struct cmap rules;           /* Contains "struct dpcls_rule"s. */
+    /* Local Cuckoo Filter:
+     * indexes rule fingerprints for this exact wildcard-mask subtable. */
+    struct cuckoo_filter *subtable_filter;
     uint32_t hit_cnt;            /* Number of match hits in subtable in current
                                     optimization interval. */
 
