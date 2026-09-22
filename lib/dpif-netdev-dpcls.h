@@ -19,7 +19,7 @@
 #define DPIF_NETDEV_DPCLS_H 1
 
 #include "dpif.h"
-
+#include "cuckoo-filter.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -97,6 +97,9 @@ struct dpcls_subtable {
 
     struct netdev_flow_key mask; /* Wildcards for fields (const). */
     /* 'mask' must be the last field, additional space is allocated here. */
+
+    /*use cuckoo filter*/
+    struct cuckoo_filter *subtable_filter;
 };
 
 /* Iterate through netdev_flow_key TNL u64 values specified by 'FLOWMAP'. */

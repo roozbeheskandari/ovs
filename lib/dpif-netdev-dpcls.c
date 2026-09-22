@@ -220,9 +220,20 @@ lookup_impl(struct dpcls_subtable *subtable,
      * an entry for the given hash key. Presence of a hash key does not
      * guarantee matching the key, as there can be hash collisions.
      */
+
+
+    if (subtable->subtable_filter) {
+        uint32_t temp_map = keys_map;
+        while (temp_map){
+            i = raw_ctz(temp_map);
+            if (!cuckoo_filter_lookup(subtable->subtable_filter, hashes[i])) {
+                keys_map &= ~(1u << i);
+            }
+            temp_map &= temp_map - 1;
+        }
+    }
     uint32_t found_map;
     const struct cmap_node *nodes[NETDEV_MAX_BURST];
-
     found_map = cmap_find_batch(&subtable->rules, keys_map, hashes, nodes);
 
     /* Verify that packet actually matched rule. If not found, a hash
