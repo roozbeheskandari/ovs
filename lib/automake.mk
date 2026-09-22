@@ -39,6 +39,15 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/ccmap.h \
 	lib/cmap.c \
 	lib/cmap.h \
+	lib/cuckoo-filter.c \
+	lib/cuckoo-filter.h \
+
+	lib/global-cuckoo-filter.c \
+	lib/global-cuckoo-filter.h \
+ 	
+	lib/dpif-netdev-ai.c \
+	lib/dpif-netdev-ai.h \
+
 	lib/colors.c \
 	lib/colors.h \
 	lib/command-line.c \
