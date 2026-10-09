@@ -7583,6 +7583,15 @@ y
             global_cuckoo_filter_note_policy(ai_result.candidate,
                                      global_filter_hit);
         }
+        /* AI و Global Filter صرفاً تله‌متری و پروفایلینگ هستند 
+ * هرگز نباید پکت را Miss در نظر بگیرند یا lookup را حذف کنند */
+for (size_t i = 0; i < cnt; i++) {
+    struct dp_netdev_ai_result ai_res = dp_netdev_ai_score(keys[i]);
+    bool global_match = global_cuckoo_filter_lookup(keys[i]);
+    
+    /* جمع‌آوری تله‌متری برای آپدیت مدل لاجستیک یا آمار بنچمارک */
+    dp_netdev_record_telemetry(ai_res, global_match);
+}
 
         any_miss = !dpcls_lookup(cls, (const struct netdev_flow_key **)keys,
                                 rules, cnt, &lookup_cnt);
@@ -9065,6 +9074,11 @@ dpcls_destroy_subtable(struct dpcls *cls, struct dpcls_subtable *subtable)
     pvector_remove(&cls->subtables, subtable);
     cmap_remove(&cls->subtables_map, &subtable->cmap_node,
                 subtable->mask.hash);
+   if (subtable->subtable_filter) {
+       cuckoo_filter_destroy(subtable->subtable_filter);
+       subtable->subtable_filter = NULL;
+   }
+
     ovsrcu_postpone(dpcls_subtable_destroy_cb, subtable);
 }
 
@@ -9094,7 +9108,8 @@ dpcls_create_subtable(struct dpcls *cls, const struct netdev_flow_key *mask)
     /* Need to add one. */
     subtable = xmalloc(sizeof *subtable
                        - sizeof subtable->mask.mf + mask->len);
-    subtable->subtable_filter = cuckoo_filter_create(1024);
+    subtable->subtable_filter = cuckoo_filter_create(DPCLS_LOCAL_CUCKOO_INITIAL_CAPACITY);
+   atomic_init(&subtable->filter_degraded, false);
     cmap_init(&subtable->rules);
     subtable->hit_cnt = 0;
     netdev_flow_key_clone(&subtable->mask, mask);
@@ -9269,7 +9284,17 @@ dpcls_insert(struct dpcls *cls, struct dpcls_rule *rule,
     rule->mask = &subtable->mask;
     cmap_insert(&subtable->rules, &rule->cmap_node, rule->flow.hash);
     if (subtable->subtable_filter) {
-        cuckoo_filter_insert(subtable->subtable_filter, rule->flow.hash);
+        //cuckoo_filter_insert(subtable->subtable_filter, rule->flow.hash);
+   /* قبل از درج/حذف، فیلتر degraded علامت می‌خورد تا ترافیک مسیر ایمن را برود */
+   atomic_store_relaxed(&subtable->filter_degraded, true);
+   
+   /* انجام عملیات Cuckoo */
+   if (!cuckoo_filter_insert(subtable->subtable_filter, rule_fingerprint)) {
+       /* اگر فیلتر سرریز شد یا خطا داد، حالت degraded ماندگار می‌شود */
+   } else {
+       atomic_store_release(&subtable->filter_degraded, false);
+   }
+
     }
 }
 
@@ -9289,6 +9314,16 @@ dpcls_remove(struct dpcls *cls, struct dpcls_rule *rule)
         dpcls_destroy_subtable(cls, subtable);
         pvector_publish(&cls->subtables);
     }
+   /* قبل از درج/حذف، فیلتر degraded علامت می‌خورد تا ترافیک مسیر ایمن را برود */
+   atomic_store_relaxed(&subtable->filter_degraded, true);
+   
+   /* انجام عملیات Cuckoo */
+   if (!cuckoo_filter_insert(subtable->subtable_filter, rule_fingerprint)) {
+       /* اگر فیلتر سرریز شد یا خطا داد، حالت degraded ماندگار می‌شود */
+   } else {
+       atomic_store_release(&subtable->filter_degraded, false);
+   }
+
 }
 
 /* Inner loop for mask generation of a unit, see dpcls_flow_key_gen_masks. */
@@ -9385,6 +9420,28 @@ dpcls_lookup(struct dpcls *cls, const struct netdev_flow_key *keys[],
      * search-key, the search for that key can stop because the rules are
      * non-overlapping. */
     PVECTOR_FOR_EACH (subtable, &cls->subtables) {
+
+uint32_t candidate_map = keys_map;
+
+    /* اگر فیلتر سالم است، بررسی پرش از ساب‌تیبل انجام شود */
+    if (subtable->subtable_filter && 
+        !atomic_load_relaxed(&subtable->filter_degraded)) {
+        
+        candidate_map = local_cuckoo_filter_candidates(
+                            subtable, keys_map, keys);
+        
+        /* اگر هیچ‌یک از پکت‌های این دسته به این ساب‌تیبل نمی‌خورند، ساب‌تیبل رد می‌شود */
+        if (!candidate_map) {
+            continue; 
+        }
+    }
+
+    /* اجرای ارزیابی قطعی (Authoritative) روی کاندیداها */
+    keys_map = subtable->lookup_func(subtable, candidate_map, keys, rules);
+    
+    if (!keys_map) {
+        return true; /* تمام پکت‌ها مچ شدند */
+    }
         /* Call the subtable specific lookup function. */
         found_map = subtable->lookup_func(subtable, keys_map, keys, rules);
 
