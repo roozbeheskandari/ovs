@@ -9274,6 +9274,7 @@ get_interval_values(atomic_ullong *source, atomic_count *cur_idx,
 }
 
 /* Insert 'rule' into 'cls'. */
+/* Insert 'rule' into 'cls'. */
 static void
 dpcls_insert(struct dpcls *cls, struct dpcls_rule *rule,
              const struct netdev_flow_key *mask)
@@ -9283,18 +9284,14 @@ dpcls_insert(struct dpcls *cls, struct dpcls_rule *rule,
     /* Refer to subtable's mask, also for later removal. */
     rule->mask = &subtable->mask;
     cmap_insert(&subtable->rules, &rule->cmap_node, rule->flow.hash);
-    if (subtable->subtable_filter) {
-        //cuckoo_filter_insert(subtable->subtable_filter, rule->flow.hash);
-   /* قبل از درج/حذف، فیلتر degraded علامت می‌خورد تا ترافیک مسیر ایمن را برود */
-   atomic_store_relaxed(&subtable->filter_degraded, true);
-   
-   /* انجام عملیات Cuckoo */
-   if (!cuckoo_filter_insert(subtable->subtable_filter, rule_fingerprint)) {
-       /* اگر فیلتر سرریز شد یا خطا داد، حالت degraded ماندگار می‌شود */
-   } else {
-       atomic_store_release(&subtable->filter_degraded, false);
-   }
 
+    if (subtable->subtable_filter) {
+        atomic_store_relaxed(&subtable->filter_degraded, true);
+        if (!cuckoo_filter_insert(subtable->subtable_filter, rule->flow.hash)) {
+            /* در صورت سرریز، فیلتر در وضعیت degraded باقی می‌ماند */
+        } else {
+            atomic_store_release(&subtable->filter_degraded, false);
+        }
     }
 }
 
@@ -9313,17 +9310,12 @@ dpcls_remove(struct dpcls *cls, struct dpcls_rule *rule)
         /* Delete empty subtable. */
         dpcls_destroy_subtable(cls, subtable);
         pvector_publish(&cls->subtables);
+    } else {
+        /* ساب‌تیبل همچنان وجود دارد؛ فیلتر را علامت‌گذاری می‌کنیم */
+        if (subtable->subtable_filter) {
+            atomic_store_relaxed(&subtable->filter_degraded, true);
+        }
     }
-   /* قبل از درج/حذف، فیلتر degraded علامت می‌خورد تا ترافیک مسیر ایمن را برود */
-   atomic_store_relaxed(&subtable->filter_degraded, true);
-   
-   /* انجام عملیات Cuckoo */
-   if (!cuckoo_filter_insert(subtable->subtable_filter, rule_fingerprint)) {
-       /* اگر فیلتر سرریز شد یا خطا داد، حالت degraded ماندگار می‌شود */
-   } else {
-       atomic_store_release(&subtable->filter_degraded, false);
-   }
-
 }
 
 /* Inner loop for mask generation of a unit, see dpcls_flow_key_gen_masks. */
