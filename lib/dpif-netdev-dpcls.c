@@ -222,7 +222,7 @@ lookup_impl(struct dpcls_subtable *subtable,
      */
 
 
-    bool degraded;
+       bool degraded = false;
     atomic_read_relaxed(&subtable->filter_degraded, &degraded);
 
     if (subtable->subtable_filter && !degraded) {
@@ -234,9 +234,8 @@ lookup_impl(struct dpcls_subtable *subtable,
             }
             temp_map &= temp_map - 1;
         }
-    
-
     }
+
     uint32_t found_map;
     const struct cmap_node *nodes[NETDEV_MAX_BURST];
     found_map = cmap_find_batch(&subtable->rules, keys_map, hashes, nodes);
