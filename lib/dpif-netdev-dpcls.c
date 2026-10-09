@@ -222,15 +222,20 @@ lookup_impl(struct dpcls_subtable *subtable,
      */
 
 
-    if (subtable->subtable_filter) {
+    bool degraded;
+    atomic_read_relaxed(&subtable->filter_degraded, &degraded);
+
+    if (subtable->subtable_filter && !degraded) {
         uint32_t temp_map = keys_map;
-        while (temp_map){
+        while (temp_map) {
             i = raw_ctz(temp_map);
             if (!cuckoo_filter_lookup(subtable->subtable_filter, hashes[i])) {
                 keys_map &= ~(1u << i);
             }
             temp_map &= temp_map - 1;
         }
+    
+
     }
     uint32_t found_map;
     const struct cmap_node *nodes[NETDEV_MAX_BURST];
