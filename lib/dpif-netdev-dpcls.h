@@ -103,7 +103,7 @@ struct dpcls_subtable {
     /* 'mask' must be the last field, additional space is allocated here. */
 
     /*use cuckoo filter*/
-    struct cuckoo_filter *subtable_filter;
+    //struct cuckoo_filter *subtable_filter;
 };
 
 /* Iterate through netdev_flow_key TNL u64 values specified by 'FLOWMAP'. */
