@@ -70,18 +70,19 @@ dpcls_subtable_lookup_func dpcls_subtable_lookup_probe(uint32_t u0_bits,
                                                        uint32_t u1_bits);
 
 /* A set of rules that all have the same fields wildcarded. */
+/* A set of rules that all have the same fields wildcarded. */
 struct dpcls_subtable {
     /* The fields are only used by writers. */
     struct cmap_node cmap_node;  /* Within dpcls 'subtables_map'. */
 
     /* These fields are accessed by readers. */
     struct cmap rules;           /* Contains "struct dpcls_rule"s. */
-    /* Local Cuckoo Filter:
-     * indexes rule fingerprints for this exact wildcard-mask subtable. */
-    struct cuckoo_filter *subtable_filter;
-    atomic_bool filter_degraded;
     uint32_t hit_cnt;            /* Number of match hits in subtable in current
                                     optimization interval. */
+
+    /* Local Cuckoo Filter */
+    struct cuckoo_filter *subtable_filter;
+    atomic_bool filter_degraded;
 
     /* Miniflow fingerprint that the subtable matches on. The miniflow "bits"
      * are used to select the actual dpcls lookup implementation at subtable
@@ -90,10 +91,7 @@ struct dpcls_subtable {
     uint8_t mf_bits_set_unit0;
     uint8_t mf_bits_set_unit1;
 
-    /* The lookup function to use for this subtable. If there is a known
-     * property of the subtable (eg: only 3 bits of miniflow metadata is
-     * used for the lookup) then this can point at an optimized version of
-     * the lookup function for this particular subtable. */
+    /* The lookup function to use for this subtable. */
     dpcls_subtable_lookup_func lookup_func;
 
     /* Caches the masks to match a packet to, reducing runtime calculations. */
@@ -101,10 +99,8 @@ struct dpcls_subtable {
 
     struct netdev_flow_key mask; /* Wildcards for fields (const). */
     /* 'mask' must be the last field, additional space is allocated here. */
-
-    /*use cuckoo filter*/
-    //struct cuckoo_filter *subtable_filter;
 };
+
 
 /* Iterate through netdev_flow_key TNL u64 values specified by 'FLOWMAP'. */
 #define NETDEV_FLOW_KEY_FOR_EACH_IN_FLOWMAP(VALUE, KEY, FLOWMAP)   \
