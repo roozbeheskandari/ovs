@@ -79,6 +79,7 @@ struct dpcls_subtable {
     /* Local Cuckoo Filter:
      * indexes rule fingerprints for this exact wildcard-mask subtable. */
     struct cuckoo_filter *subtable_filter;
+    atomic_bool filter_degraded;
     uint32_t hit_cnt;            /* Number of match hits in subtable in current
                                     optimization interval. */
 
