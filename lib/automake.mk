@@ -93,6 +93,17 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/dpdk.h \
 	lib/dpif-netdev-dfc.c \
 	lib/dpif-netdev-dfc.h \
+	lib/cuckoo-filter.c \
+	lib/cuckoo-filter.h \
+	lib/dpif-netdev-ai.c \
+	lib/dpif-netdev-ai.h \
+	lib/global-cuckoo-filter.c \
+	lib/global-cuckoo-filter.h \
+	lib/dpif-netdev-perf.c \
+	lib/dpif-netdev-perf.h \
+	lib/dpif-netdev.c \
+	lib/dpif-netdev.h \
+
 	lib/dpif-netdev-dpcls.c \
 	lib/dpif-netdev-dpcls.h \
 	lib/dpif-netdev-flow.h \
