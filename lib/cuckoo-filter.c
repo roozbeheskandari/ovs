@@ -11,7 +11,7 @@ VLOG_DEFINE_THIS_MODULE(cuckoo_filter);
 
 static inline uint16_t get_fingerprint(uint32_t hash) {
     uint16_t fp = hash & 0xFFFF;
-    return fp ? fp : 1; /* اثرانگشت صفر به عنوان اسلات خالی رزرو است */
+    return fp ? fp : 1;
 }
 
 static inline void get_index(uint32_t hash, uint16_t fp, size_t num_buckets, size_t *i1, size_t *i2) {
@@ -45,11 +45,14 @@ struct kick_entry {
 };
 
 bool cuckoo_filter_insert(struct cuckoo_filter *cf, uint32_t hash) {
+    if (!cf || cf->num_buckets == 0) {
+        return false;
+    }
+
     uint16_t fp = get_fingerprint(hash);
     size_t i1, i2;
     get_index(hash, fp, cf->num_buckets, &i1, &i2);
 
-    /* تلاش برای باکت اول */
     for (int i = 0; i < CUCKOO_BUCKET_SIZE; i++) {
         if (cf->buckets[i1].fingerprints[i] == 0) {
             cf->buckets[i1].fingerprints[i] = fp;
@@ -58,7 +61,6 @@ bool cuckoo_filter_insert(struct cuckoo_filter *cf, uint32_t hash) {
         }
     }
 
-    /* تلاش برای باکت دوم */
     for (int i = 0; i < CUCKOO_BUCKET_SIZE; i++) {
         if (cf->buckets[i2].fingerprints[i] == 0) {
             cf->buckets[i2].fingerprints[i] = fp;
@@ -67,7 +69,6 @@ bool cuckoo_filter_insert(struct cuckoo_filter *cf, uint32_t hash) {
         }
     }
 
-    /* شروع Kickout با قابلیت Rollback کامل */
     struct kick_entry kick_log[CUCKOO_MAX_KICKS];
     int kicks_done = 0;
 
@@ -94,7 +95,7 @@ bool cuckoo_filter_insert(struct cuckoo_filter *cf, uint32_t hash) {
         }
     }
 
-    /* Rollback در صورت اشباع */
+    /* بازگردانی در صورت نرسیدن به نتیجه برای جلوگیری از گم شدن داده */
     for (int i = kicks_done - 1; i >= 0; i--) {
         cf->buckets[kick_log[i].bucket_idx].fingerprints[kick_log[i].slot] = kick_log[i].old_fp;
     }
@@ -106,6 +107,7 @@ bool cuckoo_filter_lookup(const struct cuckoo_filter *cf, uint32_t hash) {
     if (!cf || cf->num_buckets == 0) {
         return false;
     }
+
     uint16_t fp = get_fingerprint(hash);
     size_t i1, i2;
     get_index(hash, fp, cf->num_buckets, &i1, &i2);
