@@ -210,16 +210,15 @@ global_cuckoo_filter_insert(const struct netdev_flow_key *key)
 
     index = (global_cuckoo_next_random(filter) & 1) ? index1 : index2;
 
-    for (i = 0; i < GLOBAL_CUCKOO_MAX_KICKS; i++) {
+        for (i = 0; i < GLOBAL_CUCKOO_MAX_KICKS; i++) {
         bucket = &filter->buckets[index];
-        evicted = bucket->fingerprints[
-            global_cuckoo_next_random(filter) % GLOBAL_CUCKOO_BUCKET_SIZE];
-        bucket->fingerprints[
-            global_cuckoo_next_random(filter) % GLOBAL_CUCKOO_BUCKET_SIZE]
-            = fingerprint;
+        size_t slot = global_cuckoo_next_random(filter) % GLOBAL_CUCKOO_BUCKET_SIZE;
+        evicted = bucket->fingerprints[slot];
+        bucket->fingerprints[slot] = fingerprint;
 
         fingerprint = evicted;
         index = global_cuckoo_index2(index, fingerprint);
+
 
         if (global_cuckoo_bucket_insert(&filter->buckets[index],
                                         fingerprint)) {
