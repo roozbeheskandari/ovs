@@ -41,13 +41,10 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/cmap.h \
 	lib/cuckoo-filter.c \
 	lib/cuckoo-filter.h \
-
 	lib/global-cuckoo-filter.c \
 	lib/global-cuckoo-filter.h \
- 	
 	lib/dpif-netdev-ai.c \
 	lib/dpif-netdev-ai.h \
-
 	lib/colors.c \
 	lib/colors.h \
 	lib/command-line.c \
@@ -103,7 +100,6 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/dpif-netdev-perf.h \
 	lib/dpif-netdev.c \
 	lib/dpif-netdev.h \
-
 	lib/dpif-netdev-dpcls.c \
 	lib/dpif-netdev-dpcls.h \
 	lib/dpif-netdev-flow.h \
