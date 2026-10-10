@@ -9289,6 +9289,7 @@ dpcls_insert(struct dpcls *cls, struct dpcls_rule *rule,
         atomic_store_relaxed(&subtable->filter_degraded, true);
         if (!cuckoo_filter_insert(subtable->subtable_filter, rule->flow.hash)) {
             /* در صورت سرریز، فیلتر در وضعیت degraded باقی می‌ماند */
+                    atomic_store_relaxed(&subtable->filter_degraded, true);
         } else {
             atomic_store_release(&subtable->filter_degraded, false);
         }
