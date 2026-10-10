@@ -7590,7 +7590,7 @@ for (size_t i = 0; i < cnt; i++) {
     bool global_match = global_cuckoo_filter_lookup(keys[i]);
     
     /* جمع‌آوری تله‌متری برای آپدیت مدل لاجستیک یا آمار بنچمارک */
-    dp_netdev_record_telemetry(ai_res, global_match);
+   // dp_netdev_record_telemetry(ai_res, global_match);
 }
 
         any_miss = !dpcls_lookup(cls, (const struct netdev_flow_key **)keys,
